@@ -187,11 +187,15 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/crawl":
                 b = self._read_json()
-                self._json(200, crawler.start(
-                    b.get("url") or "", int(b.get("pages") or 0),
-                    bool(b.get("browser", True)), bool(b.get("images", True)),
-                    bool(b.get("externos")),
+                self._json(200, crawler.descobrir(
+                    b.get("url") or "", bool(b.get("browser", True)), bool(b.get("externos")),
+                    int(b.get("pages") or 0), b.get("incluir") or "", b.get("excluir") or "",
+                    bool(b.get("so_abaixo", True)),
                 ))
+                return
+            if path == "/api/crawl-build":
+                b = self._read_json()
+                self._json(200, crawler.montar(b.get("urls") or [], bool(b.get("images", True))))
                 return
             if path == "/api/crawl-stop":
                 self._json(200, crawler.stop())

@@ -1,17 +1,23 @@
-"""Le um site de documentacao inteiro e devolve texto limpo para virar arquivo de treino.
+"""Le um site de documentacao e devolve texto limpo para virar arquivo de treino.
 
-Sites de doc dividem o conteudo em abas e links; aqui a raiz e so o ponto de partida.
-O extrator segue os links do mesmo dominio, pagina por pagina, com limite e pausa —
-e um visitante educado, nao um aspirador.
+Em dois tempos:
 
-Paginas com conteudo montado por JavaScript nao aparecem no HTML cru; por isso existe o
-modo navegador, que abre a pagina no Chrome sem janela e pega o DOM ja renderizado.
+1. **descobrir** — anda a arvore a partir da raiz e lista cada pagina com o titulo,
+   guardando o texto de lado. Filtros de endereco mantem o passeio dentro do que
+   interessa: so a versao 3 do Python, so o espaco de um time no Confluence.
+2. **montar** — voce marca as paginas que quer e so elas viram o arquivo de treino.
+
+Assim nao e preciso adivinhar um numero de paginas: voce ve os nomes e escolhe.
+
+Pagina montada por JavaScript nao aparece no HTML cru; por isso existe o modo navegador,
+que abre a pagina no Chrome sem janela e pega o DOM ja renderizado.
 """
 
 from __future__ import annotations
 
 import base64
 import html
+import json
 import re
 import shutil
 import subprocess
@@ -29,11 +35,12 @@ UA = "Mozilla/5.0 (compatible; agente-pc/1.0; +local training data collector)"
 SKIP_EXT = (".pdf", ".zip", ".tar", ".gz", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp",
             ".mp4", ".mp3", ".css", ".js", ".json", ".xml", ".ico", ".woff", ".woff2")
 
-# A extracao pode render dezenas de MB: nada disso fica em memoria nem sobe para a pagina.
-# Cada pagina e gravada no arquivo assim que sai, e a tela mostra so contadores e amostra.
+# O texto pode dar dezenas de MB: fica em disco (paginas.jsonl), nunca na resposta da API.
+# Para a tela vai so a lista de paginas (endereco, titulo, tamanho).
 _job: dict = {
     "state": "idle", "url": "", "pages": 0, "target": 0, "images": 0, "queue": 0, "externas": 0,
-    "chars": 0, "file": "", "preview": "", "lines": [], "visited": [],
+    "chars": 0, "file": "", "cache": "", "lines": [], "paginas": [], "visited": [],
+    "fase": "", "selecionadas": 0,
 }
 
 
@@ -168,6 +175,24 @@ def commands(text: str) -> list[str]:
     return saida[:200]
 
 
+def _termos(texto: str) -> list[str]:
+    """Aceita termos separados por virgula, ponto-e-virgula ou quebra de linha."""
+    return [x.strip() for x in re.split(r"[,;\n]", texto or "") if x.strip()]
+
+
+def passa_filtro(url: str, incluir: list[str], excluir: list[str], prefixo: str = "") -> bool:
+    """Endereco decide o assunto: /pt-br/3/ e uma versao do Python, /spaces/TIME/ e um time."""
+    baixo = url.lower()
+    if prefixo:
+        # a barra e a fronteira: sem ela, /pt-br/3 deixaria passar /pt-br/3.13
+        base = prefixo.rstrip("/").lower()
+        if baixo != base and not baixo.startswith(base + "/"):
+            return False
+    if incluir and not any(t.lower() in baixo for t in incluir):
+        return False
+    return not any(t.lower() in baixo for t in excluir)
+
+
 def _links(page: str, base: str, root: str, externos: bool = False) -> list[tuple[str, bool]]:
     """(url, e_de_fora). Doc de instalacao aponta para a doc de outra ferramenta; com
     externos ligados esses links entram, mas so um nivel — nao viram um rastejador da web."""
@@ -244,96 +269,158 @@ def describe_image(url: str, alt: str, model: str) -> str:
 
 
 # ----------------------------------------------------------------------- job
-def start(url: str, max_pages: int = 0, browser: bool = True, images: bool = True,
-          externos: bool = False) -> dict:
-    """max_pages 0 = sem limite: anda a arvore inteira do dominio ate a fila esvaziar."""
+def _cache_path(base: Path) -> Path:
+    return base.with_suffix(".paginas.jsonl")
+
+
+def descobrir(url: str, browser: bool = True, externos: bool = False, max_pages: int = 0,
+              incluir: str = "", excluir: str = "", so_abaixo: bool = True) -> dict:
+    """Anda a arvore e lista as paginas. Nao monta arquivo de treino ainda."""
     if _job["state"] == "running":
-        return {"accepted": False, "reason": "ja tem uma extracao rodando"}
+        return {"accepted": False, "reason": "ja tem uma busca rodando"}
     url = (url or "").strip()
     if not re.match(r"^https?://", url):
         return {"accepted": False, "reason": "informe a URL inteira, com http:// ou https://"}
-    max_pages = max(0, int(max_pages or 0))
     binary = _chrome() if browser else None
     if browser and not binary:
         return {"accepted": False, "reason": "Chrome nao encontrado; desmarque 'usar navegador'"}
-    vmodel = vision_model() if images else ""
+    max_pages = max(0, int(max_pages or 0))
+    termos_sim, termos_nao = _termos(incluir), _termos(excluir)
+    # a barra final importa: sem ela, "tutorial/x.html" resolveria um nivel acima
+    raiz = url if url.endswith("/") or "." in url.rsplit("/", 1)[-1] else url + "/"
+    # "so abaixo deste caminho" resolve o caso das versoes: a raiz
+    # https://docs.python.org/pt-br/3/ nao deixa entrar /pt-br/3.13/
+    prefixo = raiz.rstrip("/") if so_abaixo else ""
     host = urllib.parse.urlparse(url).netloc.replace(":", "-")
-    dest = out_dir() / f"{host}-{time.strftime('%Y%m%d-%H%M%S')}.md"
-    dest.write_text(f"# Extracao de {url}\n", encoding="utf-8")
+    destino = out_dir() / f"{host}-{time.strftime('%Y%m%d-%H%M%S')}.md"
+    cache = _cache_path(destino)
+    cache.write_text("", encoding="utf-8")
     _job.update({
-        "state": "running", "url": url, "pages": 0, "target": max_pages, "images": 0, "queue": 1, "externas": 0,
-        "chars": 0, "file": str(dest), "preview": "", "lines": [], "visited": [],
+        "state": "running", "fase": "descobrindo", "url": url, "pages": 0, "target": max_pages,
+        "images": 0, "queue": 1, "externas": 0, "chars": 0, "file": str(destino),
+        "cache": str(cache), "lines": [], "paginas": [], "visited": [], "selecionadas": 0,
     })
 
     def _go() -> None:
         try:
-            if images and not vmodel:
-                _say("sem modelo de visao instalado: uso so a legenda das imagens (veja learn.vision_model)")
-            elif vmodel:
-                _say(f"imagens vao passar pelo {vmodel}")
-            _say(("navegador (Chrome sem janela): pega paginas montadas por JavaScript"
-                  if binary else "modo simples: le o HTML cru, sem JavaScript"))
-            _say("sem limite de paginas" if not max_pages else f"limite de {max_pages} paginas")
-            _say("seguindo tambem links para fora do dominio (1 nivel)" if externos
-                 else "so links do mesmo dominio")
-            root = url.rstrip("/")
-            queue, seen, conteudos = [(root, False)], {root}, set()
-            delay = float((load().get("learn") or {}).get("crawl_delay") or 0.5)
+            _say("navegador (Chrome sem janela): pega paginas montadas por JavaScript"
+                 if binary else "modo simples: le o HTML cru, sem JavaScript")
+            if prefixo:
+                _say(f"so paginas abaixo de {prefixo}")
+            if termos_sim:
+                _say(f"so endereco contendo: {', '.join(termos_sim)}")
+            if termos_nao:
+                _say(f"pulando endereco com: {', '.join(termos_nao)}")
+            fila, vistos, conteudos = [(raiz, False)], {raiz}, set()
+            espera = float((load().get("learn") or {}).get("crawl_delay") or 0.5)
             t0 = time.time()
-            while queue and _job["state"] == "running":
-                if max_pages and _job["pages"] >= max_pages:
-                    break
-                page_url, de_fora = queue.pop(0)
-                _job["queue"] = len(queue)
-                try:
-                    page = _fetch_browser(page_url, binary) if binary else _fetch_plain(page_url)
-                except (urllib.error.URLError, OSError, subprocess.SubprocessError, ValueError) as exc:
-                    _say(f"pulei {page_url}: {exc}")
-                    continue
-                if not page.strip():
-                    continue
-                title, text, imgs = extract(page)
-                _job["pages"] += 1
-                _job["externas"] += 1 if de_fora else 0
-                _job["visited"].append(page_url)
-                # a mesma pagina costuma ter varias URLs; o conteudo decide se ja veio
-                marca = hash(text[:4000])
-                if text and marca not in conteudos:
-                    conteudos.add(marca)
-                    block = [f"\n\n## {title or page_url}", f"fonte: {page_url}", text]
-                    for img in imgs[:8] if vmodel else []:
-                        full = urllib.parse.urljoin(page_url, img["src"])
-                        desc = describe_image(full, img["alt"], vmodel)
-                        if _util(desc):
-                            _job["images"] += 1
-                            block.append(f"[imagem] {desc}")
-                    with Path(_job["file"]).open("a", encoding="utf-8") as fh:
-                        fh.write("\n".join(block) + "\n")
-                    _job["chars"] = Path(_job["file"]).stat().st_size
-                    if len(_job["preview"]) < 2000:
-                        _job["preview"] += "\n".join(block)[:2000]
-                ritmo = _job["pages"] / max(time.time() - t0, 1)
-                _say(f"{_job['pages']} lidas, {len(queue)} na fila ({ritmo * 60:.0f}/min) — {(title or page_url)[:60]}")
-                # pagina de fora nao espalha: entra, e o galho para ali
-                for link, fora in ([] if de_fora else _links(page, page_url, root, externos)):
-                    if link not in seen:
-                        seen.add(link)
-                        queue.append((link, fora))
-                time.sleep(delay)
-            _job["queue"] = len(queue)
+            with Path(_job["cache"]).open("a", encoding="utf-8") as fh:
+                while fila and _job["state"] == "running":
+                    if max_pages and _job["pages"] >= max_pages:
+                        break
+                    pagina_url, de_fora = fila.pop(0)
+                    _job["queue"] = len(fila)
+                    try:
+                        page = _fetch_browser(pagina_url, binary) if binary else _fetch_plain(pagina_url)
+                    except (urllib.error.URLError, OSError, subprocess.SubprocessError, ValueError) as exc:
+                        _say(f"pulei {pagina_url}: {exc}")
+                        continue
+                    if not page.strip():
+                        continue
+                    titulo, texto, imgs = extract(page)
+                    _job["pages"] += 1
+                    _job["externas"] += 1 if de_fora else 0
+                    _job["visited"].append(pagina_url)
+                    marca = hash(texto[:4000])
+                    if texto and marca not in conteudos:
+                        conteudos.add(marca)
+                        fh.write(json.dumps({"url": pagina_url, "titulo": titulo, "texto": texto,
+                                             "imagens": imgs[:8], "fora": de_fora},
+                                            ensure_ascii=False) + "\n")
+                        fh.flush()
+                        _job["chars"] += len(texto)
+                        _job["paginas"].append({
+                            "url": pagina_url, "titulo": titulo or pagina_url,
+                            "chars": len(texto), "imagens": len(imgs), "fora": de_fora,
+                        })
+                    ritmo = _job["pages"] / max(time.time() - t0, 1)
+                    _say(f"{_job['pages']} lidas, {len(fila)} na fila ({ritmo * 60:.0f}/min) — "
+                         f"{(titulo or pagina_url)[:60]}")
+                    for link, fora in ([] if de_fora else _links(page, pagina_url, raiz, externos)):
+                        if link in vistos:
+                            continue
+                        if not fora and not passa_filtro(link, termos_sim, termos_nao, prefixo):
+                            continue
+                        vistos.add(link)
+                        fila.append((link, fora))
+                    time.sleep(espera)
+            _job["queue"] = len(fila)
             _job["state"] = "done"
-            _say(f"fim: {_job['pages']} paginas, {_job['chars'] / 1000:.0f} mil caracteres, "
-                 f"{_job['images']} imagens -> {_job['file']}")
+            _job["fase"] = "descoberto"
+            _say(f"achei {len(_job['paginas'])} pagina(s). Marque as que quer e clique em Extrair.")
         except Exception as exc:
             _job["state"] = "error"
             _say(f"erro: {exc}")
 
     threading.Thread(target=_go, name="crawler", daemon=True).start()
-    return {"accepted": True, "browser": bool(binary), "vision": vmodel, "file": str(dest)}
+    return {"accepted": True, "browser": bool(binary), "file": str(destino)}
+
+
+def montar(urls: list[str], imagens: bool = True) -> dict:
+    """Escreve o arquivo de treino so com as paginas marcadas."""
+    if _job["state"] == "running":
+        return {"accepted": False, "reason": "espere a busca terminar"}
+    cache = Path(_job.get("cache") or "")
+    if not cache.exists():
+        return {"accepted": False, "reason": "nao ha busca para aproveitar; descubra as paginas antes"}
+    escolhidas = set(urls or [])
+    if not escolhidas:
+        return {"accepted": False, "reason": "marque ao menos uma pagina"}
+    vmodel = vision_model() if imagens else ""
+    _job.update({"state": "running", "fase": "montando", "images": 0,
+                 "selecionadas": len(escolhidas), "lines": []})
+
+    def _go() -> None:
+        try:
+            destino = Path(_job["file"])
+            _say(f"montando {len(escolhidas)} pagina(s)"
+                 + (f"; imagens pelo {vmodel}" if vmodel else ""))
+            with destino.open("w", encoding="utf-8") as saida:
+                saida.write(f"# Extracao de {_job['url']}\n")
+                feitas = 0
+                for linha in cache.read_text(encoding="utf-8").splitlines():
+                    if not linha.strip() or _job["state"] != "running":
+                        continue
+                    reg = json.loads(linha)
+                    if reg["url"] not in escolhidas:
+                        continue
+                    bloco = [f"\n\n## {reg['titulo'] or reg['url']}", f"fonte: {reg['url']}", reg["texto"]]
+                    for img in reg.get("imagens") or []:
+                        if not vmodel:
+                            break
+                        full = urllib.parse.urljoin(reg["url"], img["src"])
+                        desc = describe_image(full, img.get("alt", ""), vmodel)
+                        if _util(desc):
+                            _job["images"] += 1
+                            bloco.append(f"[imagem] {desc}")
+                    saida.write("\n".join(bloco) + "\n")
+                    feitas += 1
+                    _say(f"{feitas}/{len(escolhidas)} — {(reg['titulo'] or reg['url'])[:60]}")
+            _job["chars"] = destino.stat().st_size
+            _job["state"] = "done"
+            _job["fase"] = "montado"
+            _say(f"pronto: {feitas} pagina(s), {_job['chars'] / 1000:.0f} mil caracteres, "
+                 f"{_job['images']} imagem(ns) -> {destino}")
+        except Exception as exc:
+            _job["state"] = "error"
+            _say(f"erro: {exc}")
+
+    threading.Thread(target=_go, name="crawler-montar", daemon=True).start()
+    return {"accepted": True}
 
 
 def stop() -> dict:
     if _job["state"] == "running":
         _job["state"] = "done"
-        _say("parado por voce; o que ja foi lido esta salvo no arquivo")
+        _say("parado por voce; o que ja foi lido esta na lista")
     return status()

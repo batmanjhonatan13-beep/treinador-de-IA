@@ -25,25 +25,40 @@
 
     <section class="card">
       <h2>1a. Puxar de um site (opcional)</h2>
-      <p class="note">Informe a raiz: o extrator anda a árvore inteira — cada aba, cada galho, blocos de código, imagens e os links que levam à doc de outras ferramentas. Ao terminar, ele já transforma tudo em fatos sozinho; o texto bruto fica no disco, você só confere o resultado. Pode parar quando quiser.</p>
+      <p class="note">Informe a raiz: o programa anda a árvore, lista cada página pelo nome e você marca o que quer extrair. Blocos de código, imagens e links para a doc de outras ferramentas entram junto. Pode parar quando quiser.</p>
       <div class="grid2">
-        <input id="url" type="text" placeholder="https://docs.exemplo.com/" />
-        <input id="subject2" type="text" placeholder="Assunto (ex.: Docker)" />
+        <input id="url" type="text" placeholder="https://docs.python.org/pt-br/3/" />
+        <input id="subject2" type="text" placeholder="Assunto (ex.: Python)" />
       </div>
       <div class="grid2">
-        <label class="sub">Páginas (0 = tudo) <input id="pages" type="number" value="0" min="0" /></label>
+        <input id="incluir" type="text" placeholder="só endereços contendo… (ex.: /spaces/TIME/)" />
+        <input id="excluir" type="text" placeholder="pular endereços contendo… (ex.: /blog/, /es/)" />
+      </div>
+      <div class="grid2">
+        <label class="sub"><input id="so_abaixo" type="checkbox" checked /> só abaixo do endereço raiz (segura a versão: <code>/pt-br/3/</code> não pega a 3.13)</label>
         <label class="sub"><input id="browser" type="checkbox" checked /> usar navegador (pega JavaScript)</label>
         <label class="sub"><input id="imgs" type="checkbox" checked /> ler as imagens (modelo de visão)</label>
-        <label class="sub"><input id="externos" type="checkbox" checked /> seguir links para outras docs (1 nível)</label>
+        <label class="sub"><input id="externos" type="checkbox" /> seguir links para outras docs (1 nível)</label>
+        <label class="sub">Teto de páginas (0 = sem teto) <input id="pages" type="number" value="0" min="0" /></label>
       </div>
       <div class="controls">
-        <button id="crawlBtn" type="button">Extrair site</button>
-        <button id="crawlStop" class="danger" type="button" disabled>Parar extração</button>
+        <button id="crawlBtn" type="button">Procurar páginas</button>
+        <button id="crawlStop" class="danger" type="button" disabled>Parar</button>
         <span id="crawlSpin" class="spin" aria-hidden="true"></span>
         <span id="crawlNote" class="note"></span>
       </div>
       <div id="crawlBar" class="bar"><span></span></div>
       <div id="crawlLog"></div>
+      <div id="achadas" class="hidden-block">
+        <div class="controls">
+          <button id="todas" type="button">Marcar todas</button>
+          <button id="nenhuma" type="button">Desmarcar</button>
+          <input id="buscaPag" type="text" placeholder="filtrar a lista pelo nome…" />
+          <button id="extrair" class="primary" type="button">Extrair selecionadas</button>
+          <span id="contaPag" class="note"></span>
+        </div>
+        <ul id="listaPag" class="runs"></ul>
+      </div>
     </section>
 
     <section class="card">
@@ -140,6 +155,48 @@
     };
 
     let crawlPoll = null;
+    let marcadas = null;      // null = ainda nao descobriu; Set = escolha do usuario
+
+    function pintaPaginas(paginas) {
+      const caixa = document.getElementById("achadas");
+      caixa.classList.toggle("open", paginas.length > 0);
+      if (!paginas.length) return;
+      if (marcadas === null) marcadas = new Set(paginas.map((p) => p.url));
+      const filtro = document.getElementById("buscaPag").value.toLowerCase();
+      const ul = document.getElementById("listaPag");
+      ul.innerHTML = "";
+      paginas
+        .filter((p) => !filtro || (p.titulo + " " + p.url).toLowerCase().includes(filtro))
+        .forEach((p) => {
+          const li = document.createElement("li");
+          const lab = document.createElement("label");
+          lab.className = "sub";
+          const cb = document.createElement("input");
+          cb.type = "checkbox";
+          cb.checked = marcadas.has(p.url);
+          cb.onchange = () => {
+            cb.checked ? marcadas.add(p.url) : marcadas.delete(p.url);
+            atualizaConta(paginas);
+          };
+          const txt = document.createElement("span");
+          txt.textContent = " " + (p.titulo || p.url) + " · " + Math.round(p.chars / 1000) + "k" +
+            (p.imagens ? " · " + p.imagens + " img" : "") + (p.fora ? " · outra doc" : "");
+          const end = document.createElement("div");
+          end.className = "note";
+          end.textContent = p.url;
+          lab.append(cb, txt);
+          const bloco = document.createElement("div");
+          bloco.append(lab, end);
+          li.appendChild(bloco);
+          ul.appendChild(li);
+        });
+      atualizaConta(paginas);
+    }
+
+    function atualizaConta(paginas) {
+      document.getElementById("contaPag").textContent =
+        (marcadas ? marcadas.size : 0) + " de " + paginas.length + " marcada(s)";
+    }
 
     async function watchCrawl() {
       const j = await api("/api/crawl-job");
@@ -148,7 +205,9 @@
       document.getElementById("crawlBtn").disabled = running;
       document.getElementById("crawlStop").disabled = !running;
       document.getElementById("crawlNote").textContent =
-        j.pages ? j.pages + " página(s) · fila " + j.queue + " · " + Math.round(j.chars / 1000) + " mil caracteres" + (j.images ? " · " + j.images + " imagem(ns)" : "") : "";
+        j.pages ? (j.fase === "montando" || j.fase === "montado"
+          ? j.selecionadas + " página(s) selecionada(s) · " + Math.round(j.chars / 1000) + " mil caracteres" + (j.images ? " · " + j.images + " imagem(ns)" : "")
+          : j.pages + " achada(s) · fila " + j.queue + " · " + Math.round(j.chars / 1000) + " mil caracteres") : "";
       const cb = document.getElementById("crawlBar");
       cb.classList.toggle("on", running || !!j.pages);
       cb.firstElementChild.style.width = j.target
@@ -157,8 +216,10 @@
       const box = document.getElementById("crawlLog");
       box.innerHTML = "";
       (j.lines || []).slice(-8).forEach((l) => appendLine("crawlLog", l, "msg sys" + (/erro/.test(l) ? " bad" : "")));
+      pintaPaginas(j.paginas || []);
       if (!running) {
         clearInterval(crawlPoll); crawlPoll = null;
+        if (j.fase === "descoberto") { return; }   // espera a escolha das paginas
         if (j.file && j.pages) {
           sourceFile = j.file;
           document.getElementById("srcNote").textContent =
@@ -178,18 +239,42 @@
 
     document.getElementById("crawlBtn").onclick = async () => {
       autoFmt = false;
+      marcadas = null;
       const r = await api("/api/crawl", {
         url: document.getElementById("url").value,
         pages: document.getElementById("pages").value,
         browser: document.getElementById("browser").checked,
-        images: document.getElementById("imgs").checked,
         externos: document.getElementById("externos").checked,
+        incluir: document.getElementById("incluir").value,
+        excluir: document.getElementById("excluir").value,
+        so_abaixo: document.getElementById("so_abaixo").checked,
       });
       if (!r.accepted) { document.getElementById("crawlNote").textContent = r.reason; return; }
       if (!crawlPoll) crawlPoll = setInterval(() => watchCrawl().catch(() => {}), 2000);
       watchCrawl();
     };
     document.getElementById("crawlStop").onclick = () => api("/api/crawl-stop", {}).then(watchCrawl);
+    document.getElementById("buscaPag").oninput = () => watchCrawl();
+    document.getElementById("todas").onclick = async () => {
+      const j = await api("/api/crawl-job");
+      marcadas = new Set((j.paginas || []).map((p) => p.url));
+      pintaPaginas(j.paginas || []);
+    };
+    document.getElementById("nenhuma").onclick = async () => {
+      marcadas = new Set();
+      pintaPaginas((await api("/api/crawl-job")).paginas || []);
+    };
+    document.getElementById("extrair").onclick = async () => {
+      if (!marcadas || !marcadas.size) { document.getElementById("crawlNote").textContent = "marque ao menos uma página"; return; }
+      const r = await api("/api/crawl-build", {
+        urls: [...marcadas],
+        images: document.getElementById("imgs").checked,
+      });
+      if (!r.accepted) { document.getElementById("crawlNote").textContent = r.reason; return; }
+      document.getElementById("achadas").classList.remove("open");
+      if (!crawlPoll) crawlPoll = setInterval(() => watchCrawl().catch(() => {}), 2000);
+      watchCrawl();
+    };
     watchCrawl().catch(() => {});
 
     api("/api/format-job").then((j) => {

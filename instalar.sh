@@ -13,6 +13,8 @@ diga() { printf '\n== %s\n' "$1"; }
 diga "verificando o Docker"
 if command -v docker >/dev/null 2>&1; then
   docker --version
+  # instalado mas parado (tipico do rootless, que nao volta sozinho apos reiniciar)
+  docker info >/dev/null 2>&1 || sh "$(dirname "$0")/docker/subir-docker.sh" || true
 else
   case "$(uname -s)" in
     Darwin)

@@ -1,8 +1,8 @@
 # Camada 1: cérebro. Trocar o arquivo não apaga a memória em disco.
 model:
-  name: smollm2:360m
+  name: qwen2.5:3b
   ollama_host: 127.0.0.1:11434
-  base_hf: HuggingFaceTB/SmolLM2-360M-Instruct
+  base_hf: Qwen/Qwen2.5-3B-Instruct
   # auto = GPU quando houver, senão CPU. cpu força memória (lento, mas funciona).
   device: auto
 

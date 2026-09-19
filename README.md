@@ -23,6 +23,9 @@ aqui mesmo ou em outro servidor por SSH.
 Daemon sem rede bridge (Docker rootless no WSL, por exemplo) cai sozinho para a rede do
 host, pelo `docker-compose.hostnet.yml`.
 
+**Docker rootless não volta sozinho depois de reiniciar a máquina** — ele não é serviço de
+sistema. O `instalar.sh` religa; à mão é `./docker/subir-docker.sh`.
+
 ## As seis páginas
 
 | Página | O que faz |
@@ -95,11 +98,24 @@ carrega em float32 (bitsandbytes só quantiza em CUDA) e o lote da prova cai par
 
 ## Extrair documentação
 
-A raiz é só o começo: o extrator segue os links do domínio, aba por aba, e grava em disco
-página por página. Usa o Chrome sem janela, então pega página montada por JavaScript;
-descreve as imagens com `learn.vision_model`; e, com "seguir links para outras docs", entra
-também nas páginas de outras ferramentas que a doc cita — um nível, sem sair rastejando a
-web. Ao terminar, formata sozinho: você vê os fatos, não o texto bruto.
+Em dois tempos, para você não precisar adivinhar um número de páginas:
+
+1. **Procurar páginas** — anda a árvore a partir da raiz e lista cada página **pelo nome**.
+2. **Marcar e extrair** — você escolhe quais entram; só elas viram arquivo de treino, e a
+   formatação começa sozinha.
+
+Usa o Chrome sem janela, então pega página montada por JavaScript; descreve as imagens com
+`learn.vision_model`; e, com "seguir links para outras docs", entra também nas páginas de
+outras ferramentas que a doc cita — um nível, sem sair rastejando a web.
+
+### Filtros de endereço
+
+O endereço é que diz o assunto, então é por ele que se filtra:
+
+- **Só abaixo do endereço raiz** (ligado por padrão): a raiz `docs.python.org/pt-br/3/` não
+  deixa entrar `/pt-br/3.13/` nem `/es/3/`. Resolve o caso de doc com várias versões.
+- **Só endereços contendo**: `/spaces/TIME/` pega um espaço do Confluence e ignora o resto.
+- **Pular endereços contendo**: `/blog/`, `/es/`, o que atrapalhar.
 
 Dois filtros cuidam da qualidade:
 
