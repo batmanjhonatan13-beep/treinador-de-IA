@@ -52,11 +52,12 @@
         <label class="sub">Teto de páginas (0 = sem teto) <input id="pages" type="number" value="0" min="0" /></label>
       </div>
       <p class="note"><strong>Doc grande?</strong> Andar pelo site página a página faz o servidor cortar o acesso: ele passa a devolver a tela de “Um momento…” em vez do conteúdo, e o extrator para e avisa. Quase toda documentação tem um pacote pronto — um download só, conteúdo completo, sem incomodar o site. Onde procurar:</p>
-      <ul class="runs">
-        <li><div><div><strong>No próprio site</strong> — Python (<code>docs.python.org/3/download.html</code>) e Django publicam <code>.zip</code> da doc inteira.</div></div></li>
-        <li><div><div><strong>Read the Docs</strong> — <code>https://PROJETO.readthedocs.io/_/downloads/&lt;idioma&gt;/&lt;versão&gt;/htmlzip/</code></div><div class="note">A versão e o idioma têm que existir: <code>en/stable</code> costuma funcionar, <code>en/latest</code> nem sempre.</div></div></li>
-        <li><div><div><strong>Quem não publica nada</strong> (Docker, Ansible, PostgreSQL…) — os conjuntos do Dash: <code>https://kapeli.com/feeds/&lt;Nome&gt;.tgz</code></div><div class="note">O do Docker tem 196 MB e 1 658 páginas HTML dentro. É a doc completa, offline.</div></div></li>
-      </ul>
+<div class="grid2">
+        <label class="sub">Categoria <select id="docCat"><option value="">todas</option></select></label>
+        <input id="docBusca" type="text" placeholder="filtrar pelo nome (ex.: docker, blender)" />
+      </div>
+      <ul id="docCatalogo" class="runs"></ul>
+      <p class="note" id="docNota"></p>
       <div class="grid2">
         <input id="zipUrl" type="text" placeholder="endereço do pacote (.zip ou .tar.gz) — ou o caminho de um arquivo/pasta aqui na máquina" />
         <button id="zipBtn" type="button">Importar documentação (.zip / .tar.gz / pasta)</button>
@@ -282,6 +283,65 @@
       if (!crawlPoll) crawlPoll = setInterval(() => watchCrawl().catch(() => {}), 2000);
       watchCrawl();
     };
+    let catalogo = [];
+
+    function pintaCatalogo() {
+      const cat = document.getElementById("docCat").value;
+      const busca = (document.getElementById("docBusca").value || "").toLowerCase();
+      const ul = document.getElementById("docCatalogo");
+      ul.innerHTML = "";
+      const itens = catalogo.filter((i) =>
+        (!cat || i.categoria === cat) && (!busca || i.nome.toLowerCase().includes(busca)));
+      itens.slice(0, 40).forEach((i) => {
+        const li = document.createElement("li");
+        const bloco = document.createElement("div");
+        const tit = document.createElement("div");
+        tit.textContent = (i.tem_pacote ? "📦 " : "🌐 ") + i.nome +
+          (i.versao ? " " + i.versao : "") + " · " + i.categoria_nome;
+        const nota = document.createElement("div");
+        nota.className = "note";
+        nota.textContent = i.nota || (i.tem_pacote ? "pacote pronto para baixar" : "só pela busca de páginas");
+        bloco.append(tit, nota);
+        const botao = document.createElement("button");
+        botao.type = "button";
+        botao.className = i.tem_pacote ? "small primary" : "small";
+        botao.textContent = i.tem_pacote ? "Importar pacote" : "Usar este endereço";
+        botao.onclick = async () => {
+          document.getElementById("subject2").value = i.nome + (i.versao ? " " + i.versao : "");
+          if (i.tem_pacote) {
+            document.getElementById("zipUrl").value = i.pacote;
+            document.getElementById("zipBtn").click();
+          } else {
+            document.getElementById("url").value = i.doc;
+            document.getElementById("docNota").textContent =
+              "endereço preenchido acima — ajuste os filtros e clique em Procurar páginas";
+            document.getElementById("url").scrollIntoView({ behavior: "smooth", block: "center" });
+          }
+        };
+        li.append(bloco, botao);
+        ul.appendChild(li);
+      });
+      if (!itens.length) ul.innerHTML = "<li>Nada com esse nome na lista.</li>";
+      document.getElementById("docNota").textContent =
+        itens.length + " de " + catalogo.length + " ferramentas" +
+        (itens.length > 40 ? " (mostrando 40 — use o filtro)" : "");
+    }
+
+    api("/api/doc-catalogo").then((j) => {
+      catalogo = j.itens || [];
+      const sel = document.getElementById("docCat");
+      Object.entries(j.categorias || {}).forEach(([id, nome]) => {
+        const o = document.createElement("option");
+        o.value = id; o.textContent = nome;
+        sel.appendChild(o);
+      });
+      pintaCatalogo();
+    }).catch(() => {
+      document.getElementById("docNota").textContent = "catálogo indisponível (reinicie a página do servidor)";
+    });
+    document.getElementById("docCat").onchange = pintaCatalogo;
+    document.getElementById("docBusca").oninput = pintaCatalogo;
+
     document.getElementById("zipBtn").onclick = async () => {
       autoFmt = false;
       marcadas = null;

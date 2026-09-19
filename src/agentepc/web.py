@@ -5,7 +5,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from agentepc import (capacidades, classificador, coletor, consolidado, crawler, export,
+from agentepc import (capacidades, catalogo_docs, classificador, coletor, consolidado, crawler, export,
                       formatter, health, imagem, lotes, memory, ollama, provision, sistemas,
                       som, train, tresd)
 from agentepc.config import ROOT
@@ -134,6 +134,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/imagens":
             self._json(200, {"coleta": coletor.status(), "treino": imagem.status()})
+            return
+        if path == "/api/doc-catalogo":
+            self._json(200, catalogo_docs.resumo())
             return
         if path == "/api/lotes":
             self._json(200, {"itens": lotes.listar()})
