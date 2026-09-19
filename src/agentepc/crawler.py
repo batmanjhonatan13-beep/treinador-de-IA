@@ -75,6 +75,24 @@ def _chrome() -> str | None:
     return None
 
 
+# A tela de "prove que voce nao e um robo" volta com HTTP 200 e um corpo bonito: sem
+# reconhece-la, o extrator soma 2.000 paginas lidas e entrega meia duzia — foi o que
+# aconteceu com a doc da Godot aqui. Estes sao os textos que essas telas usam.
+VERIFICACAO = re.compile(
+    r"(?i)just a moment|um momento|verificaç[aã]o de seguran|checking your browser|"
+    r"enable javascript and cookies|cf-browser-verification|cf_chl_opt|challenge-platform|"
+    r"attention required!|acesso negado pelo firewall"
+)
+
+
+def parece_verificacao(page: str, titulo: str) -> bool:
+    """A pagina veio, mas e a tela de verificacao do site, nao o conteudo."""
+    if VERIFICACAO.search(titulo or ""):
+        return True
+    # o corpo de uma tela dessas e pequeno; uma pagina de doc de verdade e bem maior
+    return len(page) < 80_000 and bool(VERIFICACAO.search(page))
+
+
 def _fetch_browser(url: str, binary: str, timeout: int = 60) -> str:
     proc = subprocess.run(
         [binary, "--headless=new", "--disable-gpu", "--no-sandbox",
@@ -82,6 +100,19 @@ def _fetch_browser(url: str, binary: str, timeout: int = 60) -> str:
         capture_output=True, text=True, errors="replace", timeout=timeout,
     )
     return proc.stdout or ""
+
+
+AVISO_BARRADO = (
+    "PAREI: o site {motivo} em vez de entregar a pagina.\n"
+    "Nao e defeito do extrator nem culpa sua: muitos sites cortam quem le muitas paginas "
+    "seguidas.\n"
+    "O que fazer:\n"
+    "  1. espere uns minutos e aumente o intervalo entre paginas (crawl_delay no config.yaml);\n"
+    "  2. melhor ainda: quase toda documentacao tem o pacote pronto para baixar. No Read the "
+    "Docs e .../_/downloads/<idioma>/<versao>/htmlzip/ — use 'Importar documentacao (.zip)' "
+    "aqui na pagina: baixa uma vez so e nao incomoda o site;\n"
+    "  3. as paginas lidas ate agora ficaram salvas e ja dao para marcar e extrair."
+)
 
 
 def _fetch_plain(url: str, timeout: int = 30) -> str:
@@ -331,6 +362,7 @@ def descobrir(url: str, browser: bool = True, externos: bool = False, max_pages:
             if termos_nao:
                 _say(f"pulando endereco com: {', '.join(termos_nao)}")
             fila, vistos, conteudos = [(raiz, False)], {normaliza(raiz)}, set()
+            barrados = 0
             espera = float((load().get("learn") or {}).get("crawl_delay") or 0.5)
             t0 = time.time()
             with Path(_job["cache"]).open("a", encoding="utf-8") as fh:
@@ -342,11 +374,31 @@ def descobrir(url: str, browser: bool = True, externos: bool = False, max_pages:
                     try:
                         page = _fetch_browser(pagina_url, binary) if binary else _fetch_plain(pagina_url)
                     except (urllib.error.URLError, OSError, subprocess.SubprocessError, ValueError) as exc:
+                        if getattr(exc, "code", None) == 429:
+                            barrados += 1
+                            if barrados >= 3:
+                                _say(AVISO_BARRADO.format(motivo="pediu para ir mais devagar (429)"))
+                                break
+                            _say("o site pediu calma (429); esperando 30 s")
+                            time.sleep(30)
+                            fila.insert(0, (pagina_url, de_fora))
+                            continue
                         _say(f"pulei {pagina_url}: {exc}")
                         continue
                     if not page.strip():
                         continue
                     titulo, texto, imgs = extract(page)
+                    if parece_verificacao(page, titulo):
+                        # nao conta como lida: contar mentiria no numero e esconderia o problema
+                        barrados += 1
+                        if barrados >= 3:
+                            _say(AVISO_BARRADO.format(
+                                motivo=f"devolveu a tela de verificacao (\"{titulo[:30]}\")"))
+                            break
+                        _say(f"verificacao de robo em {pagina_url}; tentando a proxima")
+                        time.sleep(5)
+                        continue
+                    barrados = 0
                     _job["pages"] += 1
                     _job["externas"] += 1 if de_fora else 0
                     _job["visited"].append(pagina_url)
@@ -387,6 +439,111 @@ def descobrir(url: str, browser: bool = True, externos: bool = False, max_pages:
 
     threading.Thread(target=_go, name="crawler", daemon=True).start()
     return {"accepted": True, "browser": bool(binary), "file": str(destino)}
+
+
+
+def importar_zip(origem: str, assunto: str = "") -> dict:
+    """Importa uma documentacao ja empacotada em .zip, em vez de andar pelo site.
+
+    E o caminho certo para doc grande: um download em vez de mil requisicoes, nada de tela
+    de verificacao, e o conteudo vem completo. Quase todo projeto no Read the Docs publica
+    o pacote em  .../_/downloads/<idioma>/<versao>/htmlzip/  — o proprio site oferece.
+
+    Aceita endereco ou caminho de arquivo aqui na maquina. Depois de importar, a lista de
+    paginas aparece igual a de uma busca: e so marcar e extrair.
+    """
+    import tempfile
+    import zipfile
+
+    if _job["state"] == "running":
+        return {"accepted": False, "reason": "ja tem uma busca rodando"}
+    from agentepc import formatter
+
+    if formatter.status()["state"] in ("running", "comandos", "parando"):
+        return {"accepted": False, "reason": "tem um lote sendo formatado; espere ou pare a formatacao"}
+    origem = (origem or "").strip()
+    if not origem:
+        return {"accepted": False, "reason": "informe o endereco do .zip ou o caminho do arquivo"}
+    lote, destino = lotes.caminho_livre(lotes.nome_para(assunto, origem))
+    cache = _cache_path(destino)
+    cache.write_text("", encoding="utf-8")
+    lotes.gravar_meta(lote, {"nome": lote, "assunto": assunto, "url": origem, "paginas": 0, "chars": 0})
+    _job.update({
+        "state": "running", "fase": "importando", "url": origem, "pages": 0, "target": 0,
+        "images": 0, "queue": 0, "externas": 0, "chars": 0, "file": str(destino),
+        "cache": str(cache), "lines": [], "paginas": [], "visited": [], "selecionadas": 0,
+        "lote": lote, "terminou": False,
+    })
+
+    def _go() -> None:
+        temporario = None
+        try:
+            if re.match(r"^https?://", origem):
+                _say(f"baixando {origem}")
+                pedido = urllib.request.Request(origem, headers={"User-Agent": UA})
+                with urllib.request.urlopen(pedido, timeout=300) as resp:
+                    temporario = Path(tempfile.mkstemp(suffix=".zip")[1])
+                    with temporario.open("wb") as saida:
+                        while pedaco := resp.read(1 << 20):
+                            saida.write(pedaco)
+                            _job["chars"] = temporario.stat().st_size
+                caminho = temporario
+                _say(f"baixado: {caminho.stat().st_size / 1e6:.1f} MB")
+            else:
+                caminho = Path(origem).expanduser()
+                if not caminho.is_file():
+                    raise RuntimeError(f"nao achei o arquivo {caminho}")
+            _job["chars"] = 0
+            with zipfile.ZipFile(caminho) as zf:
+                paginas = [n for n in zf.namelist()
+                           if n.lower().endswith((".html", ".htm"))
+                           and "/_static/" not in n and "/_sources/" not in n
+                           and Path(n).name not in ("search.html", "genindex.html", "py-modindex.html")]
+                if not paginas:
+                    raise RuntimeError("esse zip nao tem paginas HTML dentro")
+                _say(f"{len(paginas)} pagina(s) no pacote")
+                conteudos = set()
+                with Path(_job["cache"]).open("a", encoding="utf-8") as fh:
+                    for nome in sorted(paginas):
+                        if _job["state"] != "running":
+                            break
+                        try:
+                            bruto = zf.read(nome).decode("utf-8", "replace")
+                        except (OSError, zipfile.BadZipFile) as exc:
+                            _say(f"pulei {nome}: {exc}")
+                            continue
+                        titulo, texto, imgs = extract(bruto)
+                        _job["pages"] += 1
+                        marca = hash(texto[:4000])
+                        if not texto or marca in conteudos:
+                            continue
+                        conteudos.add(marca)
+                        endereco = f"{origem.rstrip('/')}#{nome}" if re.match(r"^https?://", origem) else nome
+                        fh.write(json.dumps({"url": endereco, "titulo": titulo, "texto": texto,
+                                             "imagens": imgs[:8], "fora": False},
+                                            ensure_ascii=False) + "\n")
+                        _job["chars"] += len(texto)
+                        _job["paginas"].append({
+                            "url": endereco, "titulo": titulo or nome,
+                            "chars": len(texto), "imagens": len(imgs), "fora": False,
+                        })
+                        if _job["pages"] % 25 == 0:
+                            _say(f"{_job['pages']}/{len(paginas)} lidas — {(titulo or nome)[:60]}")
+            _job["state"] = "done"
+            _job["fase"] = "descoberto"
+            _job["terminou"] = True
+            lotes.gravar_meta(_job["lote"], {"paginas": len(_job["paginas"]), "chars": _job["chars"]})
+            _say(f"IMPORTACAO CONCLUIDA — {len(_job['paginas'])} pagina(s) com texto. "
+                 "Marque as que quer e clique em Extrair.")
+        except Exception as exc:
+            _job["state"] = "error"
+            _say(f"erro: {exc}")
+        finally:
+            if temporario and temporario.exists():
+                temporario.unlink()
+
+    threading.Thread(target=_go, name="importar-zip", daemon=True).start()
+    return {"accepted": True, "lote": lote}
 
 
 def montar(urls: list[str], imagens: bool = True) -> dict:
@@ -449,11 +606,13 @@ def limpar() -> dict:
     """Esquece a busca atual (lista de paginas e cache), sem apagar lotes ja montados."""
     if _job["state"] == "running":
         return {"ok": False, "reason": "pare a busca antes de limpar"}
-    cache = Path(_job.get("cache") or "")
-    if cache.exists() and _job.get("fase") != "montado":
+    # Path("") vira Path("."), que existe: sem esta guarda o "Limpar busca" sem busca
+    # nenhuma tentava apagar a pasta atual
+    cache = Path(_job["cache"]) if _job.get("cache") else None
+    if cache and cache.is_file() and _job.get("fase") != "montado":
         cache.unlink()
-        bruto = Path(_job.get("file") or "")
-        if bruto.exists() and bruto.stat().st_size < 200:
+        bruto = Path(_job["file"]) if _job.get("file") else None
+        if bruto and bruto.is_file() and bruto.stat().st_size < 200:
             bruto.unlink()
             (bruto.parent / f"{bruto.stem}.json").unlink(missing_ok=True)
     _job.update({"state": "idle", "fase": "", "pages": 0, "queue": 0, "chars": 0, "images": 0,

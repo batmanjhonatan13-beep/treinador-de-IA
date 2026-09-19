@@ -14,6 +14,9 @@
       <a href="/preparar.html">Preparar dados</a>
       <a href="/treino.html">Treino</a>
       <a href="/imagens.html">Imagens</a>
+      <a href="/classificador.html">Classificador</a>
+      <a href="/som.html">Som</a>
+      <a href="/tresd.html">3D</a>
       <a href="/exportar.html">Exportar</a>
       <a href="/ambiente.html">Ambiente</a>
     </nav>
@@ -39,6 +42,22 @@
         <span id="spin" class="spin" aria-hidden="true"></span>
       </div>
       <div id="log"></div>
+    </section>
+
+    <section class="card">
+      <h2>Juntar vários conhecimentos num pacote só</h2>
+      <p class="note">Marque tudo que precisa ir para a mesma máquina — a doc que você treinou, o estilo de imagem, o som, o classificador. Sai <strong>uma pasta</strong> com cada peça na sua subpasta, um <code>instalar.sh</code> que prepara tudo de uma vez e um README dizendo em cima de que modelo cada peça roda.</p>
+      <p class="note"><strong>Isto não é fusão.</strong> Dois conhecimentos de <em>texto</em> no mesmo pacote continuam carregando um de cada vez: juntar adaptadores já treinados foi medido aqui e piora o resultado. Para os dois assuntos numa resposta só, treine os arquivos juntos na página Treino.</p>
+      <ul id="escolha" class="runs"></ul>
+      <div class="grid2">
+        <input id="nomeConjunto" type="text" placeholder="nome do pacote (ex.: producao-v1)" />
+        <label class="sub">Sistema <select id="sistemaConjunto"></select></label>
+      </div>
+      <label class="sub"><input id="baseConjunto" type="checkbox" /> incluir o modelo base (~6 GB, roda sem internet)</label>
+      <div class="controls">
+        <button id="goConjunto" class="primary" type="button">Montar pacote com os marcados</button>
+        <span id="notaConjunto" class="note"></span>
+      </div>
     </section>
 
     <section class="card">
@@ -70,6 +89,24 @@
         sel.appendChild(o);
         document.getElementById("go").disabled = true;
       }
+      const box = document.getElementById("escolha");
+      box.innerHTML = "";
+      (j.runs || []).slice().reverse().forEach((r) => {
+        const li = document.createElement("li");
+        const lab = document.createElement("label");
+        lab.className = "sub";
+        const cx = document.createElement("input");
+        cx.type = "checkbox"; cx.value = r.id; cx.className = "escolhaCx";
+        const txt = document.createElement("span");
+        txt.textContent = " [" + (r.tipo || "texto") + "] " + r.file +
+          (r.detalhe ? " — " + r.detalhe : "") +
+          (r.modelo || r.base_hf ? " · roda em " + (r.modelo || r.base_hf) : "");
+        lab.append(cx, txt);
+        li.appendChild(lab);
+        box.appendChild(li);
+      });
+      if (!(j.runs || []).length) box.innerHTML = "<li>Nada consolidado ainda.</li>";
+
       if (!document.getElementById("name").value && sel.value) {
         const txt = sel.options[sel.selectedIndex].textContent;
         document.getElementById("name").value = txt.replace(/^🟢 /, "").split(" ·")[0].replace(/\.[a-z]+$/, "");
@@ -123,9 +160,27 @@
       refreshExports();
     };
 
+    document.getElementById("goConjunto").onclick = async () => {
+      const ids = Array.from(document.querySelectorAll(".escolhaCx:checked")).map((x) => x.value);
+      const nota = document.getElementById("notaConjunto");
+      if (!ids.length) { nota.textContent = "marque pelo menos um"; nota.className = "note bad"; return; }
+      nota.className = "note"; nota.textContent = "montando " + ids.length + " peça(s)…";
+      const r = await api("/api/export-varios", {
+        ids,
+        name: document.getElementById("nomeConjunto").value,
+        base: document.getElementById("baseConjunto").checked,
+        sistema: document.getElementById("sistemaConjunto").value,
+        archive: document.getElementById("archive").checked,
+      });
+      if (!r.accepted) { nota.textContent = r.reason; nota.className = "note bad"; return; }
+      refreshExports();
+    };
+
     api("/api/sistemas").then((s) => {
-      const sel = document.getElementById("sistema");
-      s.itens.forEach((i) => { const o = document.createElement("option"); o.value = i.id; o.textContent = i.nome; sel.appendChild(o); });
+      ["sistema", "sistemaConjunto"].forEach((id) => {
+        const sel = document.getElementById(id);
+        s.itens.forEach((i) => { const o = document.createElement("option"); o.value = i.id; o.textContent = i.nome; sel.appendChild(o); });
+      });
     });
     loadRuns().catch((e) => appendLine("log", e.message));
     refreshExports().catch((e) => appendLine("log", e.message));

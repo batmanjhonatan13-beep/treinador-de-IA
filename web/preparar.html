@@ -14,6 +14,9 @@
       <a href="/preparar.html">Preparar dados</a>
       <a href="/treino.html">Treino</a>
       <a href="/imagens.html">Imagens</a>
+      <a href="/classificador.html">Classificador</a>
+      <a href="/som.html">Som</a>
+      <a href="/tresd.html">3D</a>
       <a href="/exportar.html">Exportar</a>
       <a href="/ambiente.html">Ambiente</a>
     </nav>
@@ -47,6 +50,11 @@
         <label class="sub"><input id="imgs" type="checkbox" checked /> ler as imagens (modelo de visão)</label>
         <label class="sub"><input id="externos" type="checkbox" /> seguir links para outras docs (1 nível)</label>
         <label class="sub">Teto de páginas (0 = sem teto) <input id="pages" type="number" value="0" min="0" /></label>
+      </div>
+      <p class="note"><strong>Doc grande?</strong> Andar pelo site página a página faz o servidor cortar o acesso: ele passa a devolver a tela de “Um momento…” em vez do conteúdo, e o extrator para e avisa. Quase toda documentação publica o pacote pronto — no Read the Docs é <code>.../_/downloads/&lt;idioma&gt;/&lt;versão&gt;/htmlzip/</code>. Um download só, conteúdo completo, sem incomodar o site.</p>
+      <div class="grid2">
+        <input id="zipUrl" type="text" placeholder="https://docs.exemplo.org/_/downloads/pt-br/latest/htmlzip/ — ou o caminho de um .zip aqui na máquina" />
+        <button id="zipBtn" type="button">Importar documentação (.zip)</button>
       </div>
       <div class="controls">
         <button id="crawlBtn" type="button">Procurar páginas</button>
@@ -263,6 +271,17 @@
         incluir: document.getElementById("incluir").value,
         excluir: document.getElementById("excluir").value,
         so_abaixo: document.getElementById("so_abaixo").checked,
+        assunto: document.getElementById("subject2").value,
+      });
+      if (!r.accepted) { document.getElementById("crawlNote").textContent = r.reason; return; }
+      if (!crawlPoll) crawlPoll = setInterval(() => watchCrawl().catch(() => {}), 2000);
+      watchCrawl();
+    };
+    document.getElementById("zipBtn").onclick = async () => {
+      autoFmt = false;
+      marcadas = null;
+      const r = await api("/api/crawl-zip", {
+        origem: document.getElementById("zipUrl").value,
         assunto: document.getElementById("subject2").value,
       });
       if (!r.accepted) { document.getElementById("crawlNote").textContent = r.reason; return; }

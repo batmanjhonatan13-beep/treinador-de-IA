@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>agente-pc — classificador</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <nav>
+      <a href="/">Chat</a>
+      <a href="/arquivo.html">Arquivos</a>
+      <a href="/preparar.html">Preparar dados</a>
+      <a href="/treino.html">Treino</a>
+      <a href="/imagens.html">Imagens</a>
+      <a href="/classificador.html">Classificador</a>
+      <a href="/som.html">Som</a>
+      <a href="/tresd.html">3D</a>
+      <a href="/exportar.html">Exportar</a>
+      <a href="/ambiente.html">Ambiente</a>
+    </nav>
+    <header>
+      <div>
+        <h1>Classificador de imagem</h1>
+        <div class="sub">Aprende a separar categorias suas — peça boa × com defeito, por exemplo. Junto com o treino de texto, é o único com <strong>prova automática</strong>: um quarto das imagens fica fora do treino e o acerto é medido nelas.</div>
+      </div>
+      <div class="controls"><span id="capPill" class="pill off">verificando…</span></div>
+    </header>
+
+    <section class="card">
+      <h2>1. Montar as categorias</h2>
+      <p class="note">Uma subpasta por categoria dentro de <code>data/classes/&lt;conjunto&gt;/</code>. Dá para largar os arquivos lá na mão, ou aproveitar uma coleção já baixada em <a href="/imagens.html">Imagens</a>. Mínimo de 8 imagens por categoria — abaixo disso a prova não significa nada.</p>
+      <div class="grid2">
+        <input id="conjunto" type="text" placeholder="nome do conjunto (ex.: pecas)" />
+        <input id="classe" type="text" placeholder="categoria (ex.: com-defeito)" />
+        <select id="colecaoSel"></select>
+        <button id="importarBtn" type="button">Usar esta coleção como categoria</button>
+      </div>
+      <ul id="conjuntos" class="runs"></ul>
+    </section>
+
+    <section class="card">
+      <h2>2. Treinar</h2>
+      <div class="grid2">
+        <select id="conjuntoSel"></select>
+        <input id="nome" type="text" placeholder="nome do classificador (opcional)" />
+        <label class="sub">Épocas <input id="epocas" type="number" value="8" min="1" max="60" /></label>
+        <label class="sub">Acerto mínimo <input id="limiar" type="number" value="0.9" min="0.5" max="1" step="0.05" /></label>
+      </div>
+      <div class="controls">
+        <button id="treinarBtn" class="primary" type="button">Treinar</button>
+        <button id="stopBtn" class="danger" type="button" disabled>Parar</button>
+        <span id="spin" class="spin" aria-hidden="true"></span>
+        <span id="nota" class="note"></span>
+      </div>
+      <div id="bar" class="bar"><span></span></div>
+      <div id="log"></div>
+    </section>
+
+    <section class="card">
+      <h2>3. Classificadores treinados</h2>
+      <p class="note">🟢 quer dizer que passou do acerto mínimo na prova. Só o que está verde entra no <a href="/exportar.html">Exportar</a>.</p>
+      <ul id="modelos" class="runs"></ul>
+    </section>
+  </div>
+  <script src="/app.js"></script>
+  <script>
+    let poll = null;
+
+    function nota(msg, ruim) {
+      const el = document.getElementById("nota");
+      el.textContent = msg; el.className = "note" + (ruim ? " bad" : "");
+    }
+
+    async function pinta() {
+      const t = await api("/api/classificador");
+
+      const conj = document.getElementById("conjuntos");
+      conj.innerHTML = "";
+      (t.conjuntos || []).forEach((cj) => {
+        const li = document.createElement("li");
+        const txt = Object.entries(cj.classes).map(([k, v]) => k + " (" + v + ")").join(" · ");
+        li.textContent = cj.id + " → " + (txt || "sem categoria ainda");
+        conj.appendChild(li);
+      });
+      const sel = document.getElementById("conjuntoSel");
+      const antes = sel.value;
+      sel.innerHTML = "";
+      (t.conjuntos || []).forEach((cj) => {
+        const o = document.createElement("option");
+        o.value = cj.id; o.textContent = cj.id + " (" + cj.total + " imagens)";
+        sel.appendChild(o);
+      });
+      if (antes) sel.value = antes;
+
+      const rodando = t.state === "running" || t.state === "parando";
+      document.getElementById("spin").classList.toggle("on", rodando);
+      document.getElementById("treinarBtn").disabled = rodando;
+      document.getElementById("stopBtn").disabled = !rodando;
+      if (t.epocas) {
+        nota("época " + t.epoca + "/" + t.epocas + " · treino " +
+             Math.round((t.treino_acerto || 0) * 100) + "% · prova " +
+             Math.round((t.acerto || 0) * 100) + "%");
+      }
+      const bar = document.getElementById("bar");
+      bar.classList.toggle("on", rodando || t.state === "done");
+      bar.classList.toggle("good", t.state === "done" && t.consolidado);
+      bar.firstElementChild.style.width = (t.epocas ? Math.min(100, (t.epoca / t.epocas) * 100) : 0) + "%";
+
+      const box = document.getElementById("log");
+      box.innerHTML = "";
+      (t.linhas || []).slice(-10).forEach((l) => appendLine("log", l, "msg sys" + (/erro|decorou/i.test(l) ? " bad" : "")));
+
+      const mods = document.getElementById("modelos");
+      mods.innerHTML = "";
+      (t.modelos || []).forEach((m) => {
+        const li = document.createElement("li");
+        const bloco = document.createElement("div");
+        const tit = document.createElement("div");
+        tit.textContent = (m.consolidado ? "🟢 " : "⚪ ") + m.id + " · " +
+          Math.round((m.acerto_prova || 0) * 100) + "% em " + (m.imagens_prova || 0) + " imagem(ns) nunca vista(s)";
+        const nt = document.createElement("div");
+        nt.className = "note";
+        nt.textContent = "categorias: " + (m.classes || []).join(", ") + " · treino " +
+          Math.round((m.acerto_treino || 0) * 100) + "% · " + (m.epocas || 0) + " época(s)";
+        bloco.append(tit, nt);
+        const del = document.createElement("button");
+        del.className = "danger small"; del.type = "button"; del.textContent = "Apagar";
+        del.onclick = async () => {
+          if (!confirm("Apagar o classificador " + m.id + "?")) return;
+          await api("/api/classificador-delete", { id: m.id }); pinta();
+        };
+        li.append(bloco, del); mods.appendChild(li);
+      });
+
+      const img = await api("/api/imagens");
+      const cs = document.getElementById("colecaoSel");
+      const antesC = cs.value;
+      cs.innerHTML = "";
+      ((img.coleta || {}).colecoes || []).forEach((col) => {
+        const o = document.createElement("option");
+        o.value = col.id; o.textContent = col.id + " (" + col.imagens + ")";
+        cs.appendChild(o);
+      });
+      if (antesC) cs.value = antesC;
+
+      const cap = await api("/api/capacidades");
+      const item = (cap.itens || []).filter((i) => i.id === "classificador-imagem")[0] || {};
+      const pill = document.getElementById("capPill");
+      pill.textContent = item.situacao === "disponivel" ? "pronto para treinar" : (item.motivo || "").slice(0, 60);
+      pill.className = "pill " + (item.situacao === "disponivel" ? "on" : "off");
+
+      if (!rodando && poll) { clearInterval(poll); poll = null; }
+      if (rodando && !poll) poll = setInterval(() => pinta().catch(() => {}), 3000);
+    }
+
+    document.getElementById("importarBtn").onclick = async () => {
+      const r = await api("/api/classificador-importar", {
+        conjunto: document.getElementById("conjunto").value,
+        classe: document.getElementById("classe").value,
+        colecao: document.getElementById("colecaoSel").value,
+      });
+      nota(r.ok ? r.copiadas + " imagem(ns) copiada(s)" : r.reason, !r.ok);
+      pinta();
+    };
+
+    document.getElementById("treinarBtn").onclick = async () => {
+      const r = await api("/api/classificador-treinar", {
+        conjunto: document.getElementById("conjuntoSel").value,
+        epocas: +document.getElementById("epocas").value,
+        nome: document.getElementById("nome").value,
+        limiar: +document.getElementById("limiar").value,
+      });
+      if (!r.accepted) return nota(r.reason, true);
+      pinta();
+      if (!poll) poll = setInterval(() => pinta().catch(() => {}), 3000);
+    };
+
+    document.getElementById("stopBtn").onclick = async () => { await api("/api/classificador-stop", {}); pinta(); };
+
+    pinta().catch((e) => nota(e.message, true));
+  </script>
+</body>
+</html>

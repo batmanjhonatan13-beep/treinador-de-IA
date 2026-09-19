@@ -1,0 +1,4 @@
+diffusers>=0.31
+trimesh
+pillow
+numpy

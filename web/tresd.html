@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>agente-pc — 3D</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <nav>
+      <a href="/">Chat</a>
+      <a href="/arquivo.html">Arquivos</a>
+      <a href="/preparar.html">Preparar dados</a>
+      <a href="/treino.html">Treino</a>
+      <a href="/imagens.html">Imagens</a>
+      <a href="/classificador.html">Classificador</a>
+      <a href="/som.html">Som</a>
+      <a href="/tresd.html">3D</a>
+      <a href="/exportar.html">Exportar</a>
+      <a href="/ambiente.html">Ambiente</a>
+    </nav>
+    <header>
+      <div>
+        <h1>3D</h1>
+        <div class="sub">De uma frase ou de uma foto sai um <code>.glb</code> para abrir no Blender ou jogar no motor de jogo. Aqui <strong>não há treino</strong>: é um modelo pronto rodando na sua placa — e está escrito por quê logo abaixo.</div>
+      </div>
+      <div class="controls"><span id="capPill" class="pill off">verificando…</span></div>
+    </header>
+
+    <section class="card">
+      <h2>Antes de clicar: o que dá e o que não dá</h2>
+      <ul class="runs">
+        <li><div><div>✅ <strong>Gerar malha</strong> — o Shap-E (OpenAI, Apache-2.0) faz texto→3D e foto→3D em segundos.</div><div class="note">A malha sai grosseira: serve de rascunho e de base para você ajustar, não de peça final.</div></div></li>
+        <li><div><div>🟡 <strong>Treinar o seu objeto</strong> — o que se treina é o lado da <em>imagem</em>.</div><div class="note">Um LoRA em <a href="/imagens.html">Imagens</a> faz o seu objeto sair sempre igual; a foto que sai dali vira malha aqui. É o caminho real para "meu personagem em 3D".</div></div></li>
+        <li><div><div>🕐 <strong>Fotos → 3D (Gaussian Splatting)</strong> — dezenas de fotos viram uma cópia fiel.</div><div class="note">Depende do COLMAP instalado no sistema (pede root). Está no catálogo do <a href="/ambiente.html">Ambiente</a> como planejado, não como botão que falha.</div></div></li>
+        <li><div><div>❌ <strong>Treinar um gerador 3D do zero</strong> (tipo Meshy) — não cabe em PC nenhum.</div><div class="note">São milhares de modelos 3D (o Objaverse tem ~10 TB) e centenas de horas de GPU de datacenter.</div></div></li>
+      </ul>
+      <p class="note">Por que Shap-E e não TripoSR, que gera melhor: o TripoSR compila código CUDA na instalação (<code>torchmcubes</code>) e quebra em máquina sem compilador C. Um cliente seu não ia conseguir instalar.</p>
+    </section>
+
+    <section class="card">
+      <h2>1. Gerar</h2>
+      <div class="grid2">
+        <input id="pedido" type="text" placeholder="o que você quer, em inglês (ex.: a wooden chair)" />
+        <input id="nome" type="text" placeholder="nome do arquivo (opcional)" />
+        <label class="sub">Foto (opcional) <select id="fotoSel"><option value="">— só texto —</option></select></label>
+        <label class="sub">Passos <input id="passos" type="number" value="64" min="16" max="128" step="8" /></label>
+      </div>
+      <div class="controls">
+        <button id="gerarBtn" class="primary" type="button">Gerar 3D</button>
+        <span id="gerarSpin" class="spin" aria-hidden="true"></span>
+        <span id="gerarNota" class="note"></span>
+      </div>
+      <div id="gerarLog"></div>
+    </section>
+
+    <section class="card">
+      <h2>2. Malhas geradas</h2>
+      <p class="note">A prévia é desenhada sem placa de vídeo (projeção dos vértices), por isso parece granulada — o <code>.glb</code> está inteiro.</p>
+      <ul id="modelos" class="runs"></ul>
+    </section>
+
+    <section class="card">
+      <h2>3. Referências CC0 (Poly Haven)</h2>
+      <p class="note">Modelos 3D de verdade, todos CC0: pode usar em projeto comercial sem citar ninguém. Servem para ver escala e topologia no Blender, ou para renderizar fotos do objeto e treinar um LoRA de imagem com elas.</p>
+      <div class="grid2">
+        <input id="termoRef" type="text" placeholder="procure em inglês (ex.: chair, plant, barrel)" />
+        <input id="nomeRef" type="text" placeholder="nome da pasta (opcional)" />
+        <label class="sub">Quantos <input id="quantRef" type="number" value="4" min="1" max="20" /></label>
+        <button id="buscarBtn" type="button">Ver o que existe</button>
+      </div>
+      <div id="achados" class="grid2"></div>
+      <div class="controls">
+        <button id="baixarBtn" class="primary" type="button">Baixar esses modelos</button>
+        <button id="refStop" class="danger" type="button" disabled>Parar</button>
+        <span id="refSpin" class="spin" aria-hidden="true"></span>
+        <span id="refNota" class="note"></span>
+      </div>
+      <div id="refLog"></div>
+      <ul id="referencias" class="runs"></ul>
+    </section>
+  </div>
+  <script src="/app.js"></script>
+  <script>
+    let poll = null;
+
+    function mb(n) { return n >= 1e6 ? (n / 1e6).toFixed(1) + " MB" : Math.round(n / 1000) + " KB"; }
+
+    function logBox(id, linhas) {
+      const box = document.getElementById(id);
+      box.innerHTML = "";
+      (linhas || []).slice(-8).forEach((l) => appendLine(id, l, "msg sys" + (/erro/i.test(l) ? " bad" : "")));
+    }
+
+    function nota(id, msg, ruim) {
+      const el = document.getElementById(id);
+      el.textContent = msg; el.className = "note" + (ruim ? " bad" : "");
+    }
+
+    async function pinta() {
+      const j = await api("/api/tresd");
+      const g = j.geracao, c = j.coleta;
+
+      const rodandoG = g.state === "running";
+      document.getElementById("gerarSpin").classList.toggle("on", rodandoG);
+      document.getElementById("gerarBtn").disabled = rodandoG;
+      logBox("gerarLog", g.linhas);
+
+      const ul = document.getElementById("modelos");
+      ul.innerHTML = "";
+      (g.modelos || []).forEach((m) => {
+        const li = document.createElement("li");
+        const bloco = document.createElement("div");
+        const tit = document.createElement("div");
+        tit.textContent = m.id + " · " + (m.origem || "") + " · " + (m.segundos || 0) + "s";
+        const links = document.createElement("div");
+        links.className = "note";
+        (m.arquivos || []).filter((a) => !a.endsWith(".png")).forEach((a) => {
+          const link = document.createElement("a");
+          link.href = "/baixar/modelos-3d/" + m.id + "/" + a;
+          link.textContent = a; link.download = a;
+          link.style.marginRight = "10px";
+          links.appendChild(link);
+        });
+        bloco.append(tit, links);
+        if ((m.arquivos || []).indexOf("previa.png") >= 0) {
+          const img = document.createElement("img");
+          img.src = "/img/modelos-3d/" + m.id + "/previa.png";
+          img.style.maxWidth = "220px"; img.style.borderRadius = "8px"; img.style.marginTop = "8px";
+          bloco.appendChild(img);
+        }
+        const del = document.createElement("button");
+        del.className = "danger small"; del.type = "button"; del.textContent = "Apagar";
+        del.onclick = async () => {
+          if (!confirm("Apagar " + m.id + "?")) return;
+          await api("/api/tresd-delete", { id: m.id }); pinta();
+        };
+        li.append(bloco, del); ul.appendChild(li);
+      });
+
+      const rodandoC = c.state === "running";
+      document.getElementById("refSpin").classList.toggle("on", rodandoC);
+      document.getElementById("baixarBtn").disabled = rodandoC;
+      document.getElementById("refStop").disabled = !rodandoC;
+      logBox("refLog", c.linhas);
+      const refs = document.getElementById("referencias");
+      refs.innerHTML = "";
+      (c.referencias || []).forEach((r) => {
+        const li = document.createElement("li");
+        const bloco = document.createElement("div");
+        const tit = document.createElement("div");
+        tit.textContent = r.id + " · " + r.itens + " modelo(s) · " + mb(r.bytes) + " · CC0";
+        const nt = document.createElement("div");
+        nt.className = "note"; nt.textContent = "em data/referencias-3d/" + r.id;
+        bloco.append(tit, nt);
+        const del = document.createElement("button");
+        del.className = "danger small"; del.type = "button"; del.textContent = "Apagar";
+        del.onclick = async () => {
+          if (!confirm("Apagar a pasta " + r.id + "?")) return;
+          await api("/api/tresd-referencia-delete", { id: r.id }); pinta();
+        };
+        li.append(bloco, del); refs.appendChild(li);
+      });
+
+      const cap = await api("/api/capacidades");
+      const item = (cap.itens || []).filter((i) => i.id === "imagem-para-3d")[0] || {};
+      const pill = document.getElementById("capPill");
+      pill.textContent = item.situacao === "disponivel" ? "pronto para gerar" : (item.motivo || "").slice(0, 60);
+      pill.className = "pill " + (item.situacao === "disponivel" ? "on" : "off");
+      document.getElementById("gerarBtn").disabled = rodandoG || item.situacao !== "disponivel";
+
+      const parado = !rodandoG && !rodandoC;
+      if (parado && poll) { clearInterval(poll); poll = null; }
+      if (!parado && !poll) poll = setInterval(() => pinta().catch(() => {}), 3000);
+    }
+
+    async function carregaFotos() {
+      const sel = document.getElementById("fotoSel");
+      try {
+        const j = await api("/api/fotos");
+        (j.itens || []).forEach((f) => {
+          const o = document.createElement("option");
+          o.value = f; o.textContent = f;
+          sel.appendChild(o);
+        });
+      } catch (e) { /* sem fotos ainda */ }
+    }
+
+    document.getElementById("gerarBtn").onclick = async () => {
+      const r = await api("/api/tresd-gerar", {
+        pedido: document.getElementById("pedido").value,
+        foto: document.getElementById("fotoSel").value,
+        passos: +document.getElementById("passos").value,
+        nome: document.getElementById("nome").value,
+      });
+      if (!r.accepted) return nota("gerarNota", r.reason, true);
+      nota("gerarNota", "gerando…");
+      pinta();
+    };
+
+    document.getElementById("buscarBtn").onclick = async () => {
+      const termo = document.getElementById("termoRef").value;
+      const j = await api("/api/tresd-buscar?termo=" + encodeURIComponent(termo));
+      const box = document.getElementById("achados");
+      box.innerHTML = "";
+      if (!j.ok) return nota("refNota", j.reason, true);
+      nota("refNota", j.total + " achado(s) — os primeiros aparecem abaixo");
+      (j.itens || []).slice(0, 12).forEach((it) => {
+        const div = document.createElement("div");
+        div.className = "note";
+        const img = document.createElement("img");
+        img.src = it.previa; img.style.width = "100%"; img.style.borderRadius = "8px";
+        img.loading = "lazy";
+        const a = document.createElement("a");
+        a.href = it.pagina; a.target = "_blank"; a.textContent = it.nome;
+        div.append(img, a);
+        box.appendChild(div);
+      });
+    };
+
+    document.getElementById("baixarBtn").onclick = async () => {
+      const r = await api("/api/tresd-coletar", {
+        termo: document.getElementById("termoRef").value,
+        quantidade: +document.getElementById("quantRef").value,
+        nome: document.getElementById("nomeRef").value,
+      });
+      if (!r.accepted) return nota("refNota", r.reason, true);
+      pinta();
+    };
+    document.getElementById("refStop").onclick = async () => { await api("/api/tresd-coletar-stop", {}); pinta(); };
+
+    carregaFotos();
+    pinta().catch((e) => nota("gerarNota", e.message, true));
+  </script>
+</body>
+</html>

@@ -7,10 +7,42 @@ from urllib.parse import parse_qs, urlparse
 
 from agentepc import (capacidades, classificador, coletor, consolidado, crawler, export,
                       formatter, health, imagem, lotes, memory, ollama, provision, sistemas,
-                      train)
+                      som, train, tresd)
 from agentepc.config import ROOT
 
 WEB = ROOT / "web"
+
+
+def _fotos(limite: int = 200) -> list[str]:
+    """Imagens que ja estao na maquina e servem de entrada para o 3D."""
+    raiz = ROOT / "data"
+    saida = []
+    for pasta in ("geradas", "imagens", "amostras"):
+        base = raiz / pasta
+        if not base.is_dir():
+            continue
+        for arq in sorted(base.rglob("*")):
+            if arq.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp"):
+                saida.append(str(arq.relative_to(raiz)))
+            if len(saida) >= limite:
+                return saida
+    return saida
+
+
+def _audios(limite: int = 200) -> list[str]:
+    """Audios que ja estao na maquina, para perguntar ao classificador."""
+    raiz = ROOT / "data"
+    saida = []
+    for pasta in ("sons-gerados", "sons", "som-classes"):
+        base = raiz / pasta
+        if not base.is_dir():
+            continue
+        for arq in sorted(base.rglob("*")):
+            if arq.suffix.lower() in (".wav", ".mp3", ".ogg", ".flac", ".oga", ".opus"):
+                saida.append(str(arq.relative_to(raiz)))
+            if len(saida) >= limite:
+                return saida
+    return saida
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -82,6 +114,24 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/classificador":
             self._json(200, classificador.status())
             return
+        if path == "/api/som":
+            self._json(200, som.status())
+            return
+        if path == "/api/som-estilos":
+            self._json(200, {"itens": som.estilos()})
+            return
+        if path == "/api/tresd":
+            self._json(200, tresd.status())
+            return
+        if path == "/api/tresd-buscar":
+            self._json(200, tresd.buscar((query.get("termo") or [""])[0]))
+            return
+        if path == "/api/fotos":
+            self._json(200, {"itens": _fotos()})
+            return
+        if path == "/api/audios":
+            self._json(200, {"itens": _audios()})
+            return
         if path == "/api/imagens":
             self._json(200, {"coleta": coletor.status(), "treino": imagem.status()})
             return
@@ -113,6 +163,27 @@ class Handler(BaseHTTPRequestHandler):
                     "lora": train.adapter_exists(),
                 },
             )
+            return
+        if path.startswith("/baixar/"):
+            alvo = (ROOT / "data" / path[len("/baixar/"):]).resolve()
+            permitido = (ROOT / "data").resolve()
+            tipos = {
+                ".wav": "audio/wav", ".mp3": "audio/mpeg", ".ogg": "audio/ogg",
+                ".flac": "audio/flac", ".glb": "model/gltf-binary", ".gltf": "model/gltf+json",
+                ".obj": "text/plain", ".ply": "application/octet-stream",
+                ".png": "image/png", ".jpg": "image/jpeg", ".json": "application/json",
+            }
+            if permitido in alvo.parents and alvo.is_file() and alvo.suffix.lower() in tipos:
+                dados = alvo.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", tipos[alvo.suffix.lower()])
+                self.send_header("Content-Length", str(len(dados)))
+                if alvo.suffix.lower() in (".glb", ".obj", ".ply", ".gltf"):
+                    self.send_header("Content-Disposition", f'attachment; filename="{alvo.name}"')
+                self.end_headers()
+                self.wfile.write(dados)
+            else:
+                self.send_error(404)
             return
         if path.startswith("/img/"):
             alvo = (ROOT / "data" / path[len("/img/"):]).resolve()
@@ -233,6 +304,10 @@ class Handler(BaseHTTPRequestHandler):
                     bool(b.get("so_abaixo", True)), b.get("assunto") or "",
                 ))
                 return
+            if path == "/api/crawl-zip":
+                b = self._read_json()
+                self._json(200, crawler.importar_zip(b.get("origem") or "", b.get("assunto") or ""))
+                return
             if path == "/api/crawl-build":
                 b = self._read_json()
                 self._json(200, crawler.montar(b.get("urls") or [], bool(b.get("images", True))))
@@ -246,6 +321,12 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/export":
                 b = self._read_json()
                 self._json(200, export.start(b.get("id") or "", b.get("name") or "", bool(b.get("base")), bool(b.get("archive", True))))
+                return
+            if path == "/api/export-varios":
+                b = self._read_json()
+                self._json(200, export.start_varios(
+                    b.get("ids") or [], b.get("name") or "", bool(b.get("base")),
+                    bool(b.get("archive", True)), b.get("sistema") or "ubuntu"))
                 return
             if path == "/api/export-delete":
                 self._json(200, export.delete(self._read_json().get("name") or ""))
@@ -281,6 +362,76 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/colecao-delete":
                 self._json(200, coletor.apagar(self._read_json().get("id") or ""))
+                return
+            if path == "/api/som-coletar":
+                b = self._read_json()
+                self._json(200, som.coletar(
+                    b.get("termo") or "", int(b.get("quantidade") or 20),
+                    b.get("licenca") or "livres", b.get("fontes") or "openverse,wikimedia",
+                    b.get("nome") or ""))
+                return
+            if path == "/api/som-coletar-stop":
+                self._json(200, som.parar_coleta())
+                return
+            if path == "/api/som-colecao-delete":
+                self._json(200, som.apagar_colecao(self._read_json().get("id") or ""))
+                return
+            if path == "/api/som-importar":
+                b = self._read_json()
+                self._json(200, som.importar(b.get("conjunto") or "", b.get("classe") or "",
+                                             b.get("colecao") or ""))
+                return
+            if path == "/api/som-treinar":
+                b = self._read_json()
+                self._json(200, som.treinar(b.get("conjunto") or "", int(b.get("epocas") or 8),
+                                            b.get("nome") or "", float(b.get("limiar") or 0.9)))
+                return
+            if path == "/api/som-stop":
+                self._json(200, som.parar())
+                return
+            if path == "/api/som-modelo-delete":
+                self._json(200, som.apagar(self._read_json().get("id") or ""))
+                return
+            if path == "/api/som-gerar":
+                b = self._read_json()
+                self._json(200, som.gerar(b.get("pedido") or "", int(b.get("segundos") or 8),
+                                          b.get("estilo") or ""))
+                return
+            if path == "/api/som-gerado-delete":
+                self._json(200, som.apagar_gerado(self._read_json().get("id") or ""))
+                return
+            if path == "/api/som-estilo-treinar":
+                b = self._read_json()
+                self._json(200, som.treinar_geracao(
+                    b.get("colecao") or "", int(b.get("passos") or 200),
+                    b.get("nome") or "", b.get("gatilho") or ""))
+                return
+            if path == "/api/som-estilo-delete":
+                self._json(200, som.apagar_estilo(self._read_json().get("id") or ""))
+                return
+            if path == "/api/som-ouvir":
+                b = self._read_json()
+                self._json(200, som.ouvir(b.get("id") or "", b.get("arquivo") or ""))
+                return
+            if path == "/api/tresd-gerar":
+                b = self._read_json()
+                self._json(200, tresd.gerar(b.get("pedido") or "", b.get("foto") or "",
+                                            int(b.get("passos") or 64), float(b.get("guia") or 15.0),
+                                            b.get("nome") or ""))
+                return
+            if path == "/api/tresd-delete":
+                self._json(200, tresd.apagar(self._read_json().get("id") or ""))
+                return
+            if path == "/api/tresd-coletar":
+                b = self._read_json()
+                self._json(200, tresd.coletar(b.get("termo") or "", int(b.get("quantidade") or 6),
+                                              b.get("nome") or ""))
+                return
+            if path == "/api/tresd-coletar-stop":
+                self._json(200, tresd.parar_coleta())
+                return
+            if path == "/api/tresd-referencia-delete":
+                self._json(200, tresd.apagar_referencia(self._read_json().get("id") or ""))
                 return
             if path == "/api/instalar-capacidade":
                 self._json(200, capacidades.instalar(self._read_json().get("id") or ""))

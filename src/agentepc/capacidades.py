@@ -89,19 +89,66 @@ CATALOGO: list[dict] = [
         "nota": "É o único além do texto com prova automática de verdade.",
     },
     {
-        "id": "imagem-para-3d",
-        "nome": "Imagem → 3D (gerar malha)",
-        "faz": "De uma foto sai um modelo 3D pronto para o motor de jogo.",
-        "pagina": "",
-        "estado": "planejado",
-        "prova": "não",
+        "id": "classificador-som",
+        "nome": "Classificador de som",
+        "faz": "Separa sons em categorias suas (motor batendo × rodando liso, por exemplo).",
+        "pagina": "/som.html",
+        "estado": "pronto",
+        "prova": "sim — acerto medido em faixas que ele nunca ouviu",
+        "vram_gb": 0,
+        "ram_gb": 6,
+        "modulos": ["torch", "torchvision", "soundfile", "scipy"],
+        "programas": [],
+        "instalar": "uv pip install --python .venv-train/bin/python -r requirements-som.txt",
+        "nota": "O áudio vira espectrograma — uma imagem do som — e daí é o mesmo treino "
+                "do classificador de imagem. Roda sem placa de vídeo.",
+    },
+    {
+        "id": "som-gerar",
+        "nome": "Gerar som e música (MusicGen)",
+        "faz": "Você escreve \"chuva com trovão ao longe\" e sai um áudio novo.",
+        "pagina": "/som.html",
+        "estado": "pronto",
+        "prova": "não — som não tem resposta certa; quem julga é o seu ouvido",
+        "vram_gb": 4,
+        "ram_gb": 8,
+        "modulos": ["torch", "transformers", "soundfile"],
+        "programas": [],
+        "instalar": "uv pip install --python .venv-train/bin/python -r requirements-som.txt",
+        "nota": "Modelo pronto da Meta, licença CC-BY-NC: serve para testar e para uso "
+                "interno, mas não para vender o áudio gerado. Sem GPU demora muito.",
+    },
+    {
+        "id": "som-estilo",
+        "nome": "Estilo de som (LoRA no MusicGen)",
+        "faz": "Ensina um jeito de soar a partir das suas faixas.",
+        "pagina": "/som.html",
+        "estado": "pronto",
+        "prova": "não — você ouve e diz se ficou parecido",
         "vram_gb": 6,
-        "ram_gb": 16,
-        "modulos": ["torch", "torchmcubes"],
-        "programas": ["cc"],
-        "instalar": "precisa de compilador C e do pacote TripoSR (github VAST-AI-Research/TripoSR)",
-        "nota": "Não é treino: é rodar um modelo pronto. O `torchmcubes` compila código CUDA, "
-                "e esta máquina não tem compilador C — por isso não foi implementado nem testado aqui.",
+        "ram_gb": 12,
+        "modulos": ["torch", "transformers", "soundfile", "peft", "scipy"],
+        "programas": [],
+        "instalar": "uv pip install --python .venv-train/bin/python -r requirements-som.txt",
+        "nota": "As faixas viram fichas de áudio (EnCodec) e o LoRA aprende a continuar "
+                "nesse estilo. Poucas faixas dão pouco resultado: junte pelo menos 20.",
+    },
+    {
+        "id": "imagem-para-3d",
+        "nome": "Texto ou foto → 3D (gerar malha)",
+        "faz": "De uma frase ou de uma foto sai um .glb para abrir no Blender ou no motor de jogo.",
+        "pagina": "/tresd.html",
+        "estado": "pronto",
+        "prova": "não — malha se julga olhando",
+        "vram_gb": 6,
+        "ram_gb": 12,
+        "modulos": ["torch", "diffusers", "trimesh"],
+        "programas": [],
+        "instalar": "uv pip install --python .venv-train/bin/python -r requirements-3d.txt",
+        "nota": "Não é treino: é rodar o Shap-E (OpenAI, Apache-2.0), que já vem no "
+                "diffusers. A malha sai grosseira — serve de rascunho, não de peça final. "
+                "O TripoSR gera melhor, mas compila código CUDA na instalação e quebra em "
+                "máquina sem compilador C; por isso não é ele que está aqui.",
     },
     {
         "id": "fotos-para-3d",
@@ -173,6 +220,10 @@ PACOTES = {
     "imagem-personagem": ["diffusers>=0.31", "torchvision", "pillow"],
     "imagem-sdxl": ["diffusers>=0.31", "torchvision", "pillow"],
     "classificador-imagem": ["torchvision", "pillow"],
+    "classificador-som": ["torchvision", "soundfile", "scipy", "numpy"],
+    "som-gerar": ["transformers>=4.44", "soundfile", "scipy", "sentencepiece"],
+    "som-estilo": ["transformers>=4.44", "soundfile", "scipy", "sentencepiece", "peft"],
+    "imagem-para-3d": ["diffusers>=0.31", "trimesh", "pillow", "numpy"],
 }
 
 _instalacao: dict = {"state": "idle", "id": "", "linhas": []}
@@ -265,11 +316,32 @@ def avaliar() -> dict:
             estado, motivo = "disponivel", ""
         saida.append({**item, "situacao": estado, "motivo": motivo,
                       "faltam": faltam_mod + faltam_prog,
+                      # tem_pacote = da para instalar por aqui, aqui ou noutro servidor
+                      "tem_pacote": bool(PACOTES.get(item["id"])),
                       "instalavel": bool(PACOTES.get(item["id"])) and estado == "instalar"})
     return {
         "maquina": {"vram_gb": vram, "ram_gb": ram, "gpu": gpu.get("nome", "")},
         "itens": saida,
     }
+
+
+def pacotes_de(ids: list[str]) -> list[str]:
+    """Junta os pacotes dos treinos escolhidos, sem repetir, na ordem pedida.
+
+    Serve para instalar num servidor remoto: la nao existe requirements-*.txt a menos que
+    o projeto tenha sido enviado, entao o script leva os nomes dos pacotes no corpo.
+    """
+    saida: list[str] = []
+    for treino_id in ids:
+        for pacote in PACOTES.get(treino_id, []):
+            if pacote not in saida:
+                saida.append(pacote)
+    return saida
+
+
+def nomes_de(ids: list[str]) -> str:
+    achados = [i["nome"] for i in CATALOGO if i["id"] in ids]
+    return ", ".join(achados)
 
 
 def liberado(treino_id: str) -> tuple[bool, str]:

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import shutil
 import tarfile
 import threading
@@ -226,9 +227,85 @@ def status() -> dict:
     return {**_job, "items": listing(), "runs": prontos(), "base_local": _base_snapshot() is not None}
 
 
+_MAIN_SOM = '\ndef main(caminho: str) -> None:\n    dados = torch.load(Path(__file__).parent / "modelo" / "modelo.pt",\n                       map_location="cpu", weights_only=False)\n    rede = models.resnet18()\n    rede.fc = torch.nn.Linear(rede.fc.in_features, len(dados["classes"]))\n    rede.load_state_dict(dados["pesos"])\n    rede.eval()\n    votos = torch.zeros(len(dados["classes"]))\n    pedacos = _fatias(Path(caminho), maximo=10)\n    if not pedacos:\n        raise SystemExit("audio curto demais ou em silencio")\n    with torch.no_grad():\n        for onda in pedacos:\n            mel = espectro(onda).unsqueeze(0).unsqueeze(0)\n            mel = torch.nn.functional.interpolate(mel, size=(224, 224), mode="bilinear",\n                                                  align_corners=False)[0].repeat(3, 1, 1)\n            votos += torch.softmax(rede(mel.unsqueeze(0))[0], dim=0)\n    votos = votos / votos.sum()\n    ordem = votos.argsort(descending=True)\n    print(dados["classes"][int(ordem[0])], f"({float(votos[ordem[0]]):.0%})")\n    for i in ordem:\n        print(f"  {dados[\'classes\'][int(i)]}: {float(votos[i]):.0%}")\n\n\nif __name__ == "__main__":\n    if len(sys.argv) < 2:\n        raise SystemExit("uso: python usar.py audio.wav")\n    main(sys.argv[1])\n'
+
+
+def _script_som() -> str:
+    """Monta um `usar.py` que roda sozinho, sem o projeto do lado.
+
+    O preparo do audio (taxa, tamanho do pedaco, espectrograma) tem que ser IGUAL ao do
+    treino, senao o acerto cai sem dar erro nenhum. Em vez de pedir para copiar codigo a
+    mao, o script sai pronto — e sai do proprio som.py, entao nao envelhece.
+    """
+    import inspect
+
+    from agentepc import som
+
+    partes = [
+        '"""Classifica um audio com o modelo deste pacote:  python usar.py audio.wav"""',
+        "import sys",
+        "from pathlib import Path",
+        "",
+        "import numpy as np",
+        "import soundfile as sf",
+        "import torch",
+        "from torchvision import models",
+        "",
+        f"SR = {som.SR}",
+        f"JANELA = {som.JANELA}",
+        f"MAX_SEG = {som.MAX_SEG}",
+        "",
+    ]
+    for funcao in (som.carregar, som._filtros_mel, som.espectro, som._fatias):
+        partes.append(inspect.getsource(funcao))
+        partes.append("")
+    partes.append(_MAIN_SOM)
+    return "\n".join(partes)
+
+
+def _script_som_estilo(item: dict) -> str:
+    """Gera som com o LoRA de estilo deste pacote, sem precisar do projeto."""
+    base = item.get("modelo") or "facebook/musicgen-small"
+    return f'''"""Gera som com o estilo treinado:  python usar.py "gentle piano melody" 8"""
+
+import json
+import sys
+from pathlib import Path
+
+import soundfile as sf
+import torch
+from peft import PeftModel
+from transformers import AutoProcessor, MusicgenForConditionalGeneration
+
+AQUI = Path(__file__).parent
+BASE = "{base}"
+
+
+def main(pedido: str, segundos: int) -> None:
+    treino = json.loads((AQUI / "modelo" / "treino.json").read_text(encoding="utf-8"))
+    print("gatilho do treino:", treino.get("gatilho"))
+    proc = AutoProcessor.from_pretrained(BASE)
+    modelo = MusicgenForConditionalGeneration.from_pretrained(BASE)
+    modelo.decoder = PeftModel.from_pretrained(modelo.decoder, str(AQUI / "modelo"))
+    if torch.cuda.is_available():
+        modelo = modelo.to("cuda")
+    entrada = proc(text=[pedido], padding=True, return_tensors="pt").to(modelo.device)
+    onda = modelo.generate(**entrada, do_sample=True, guidance_scale=3.0,
+                           max_new_tokens=int(segundos) * 50)
+    sf.write("saida.wav", onda[0, 0].float().cpu().numpy(),
+             modelo.config.audio_encoder.sampling_rate)
+    print("saida.wav pronto")
+
+
+if __name__ == "__main__":
+    pedido = sys.argv[1] if len(sys.argv) > 1 else "gentle piano melody"
+    main(pedido, sys.argv[2] if len(sys.argv) > 2 else 8)
+'''
+
+
 def _empacota_outro(item: dict, dest: Path, sistema: str) -> dict:
     """Pacote de um treino que nao e de texto: os pesos + como usar."""
-    from agentepc import classificador, imagem, sistemas
+    from agentepc import classificador, imagem, sistemas, som, tresd
 
     if item["tipo"] == "imagem":
         origem = imagem.saida_raiz() / item["id"]
@@ -267,11 +344,57 @@ print(d["classes"][m(x).argmax(1).item()])
 
 Prova: {item['detalhe']}
 """
+    elif item["tipo"] == "som-classificador":
+        origem = som.modelos_raiz() / item["id"]
+        leia = f"""# {item['id']}
+
+Classificador de som (resnet18 sobre espectrograma).
+
+    pip install torch torchvision soundfile scipy numpy
+    python usar.py meu-audio.wav
+
+O `usar.py` vai junto e nao depende do projeto: ele carrega o mesmo preparo de audio do
+treino (mono, {som.SR} Hz, pedacos de {som.JANELA:.0f} s). Preparo diferente derruba o
+acerto sem dar erro nenhum — por isso vai pronto em vez de vir explicado.
+
+Prova: {item['detalhe']}
+"""
+    elif item["tipo"] == "som-estilo":
+        origem = resolve("data/som-lora") / item["id"]
+        leia = f"""# {item['id']}
+
+Estilo de som (LoRA) para **{item.get('modelo') or 'facebook/musicgen-small'}**.
+O gatilho esta em `modelo/treino.json`. Use o `usar.py` deste pacote.
+
+ATENCAO A LICENCA: o MusicGen e CC-BY-NC. O LoRA aqui dentro e seu, mas so roda em cima
+desse modelo, e o audio gerado por ele nao pode ser vendido.
+
+Consolidado por julgamento seu: {item['detalhe']}
+"""
+    elif item["tipo"] == "3d":
+        origem = tresd.raiz() / item["id"]
+        leia = f"""# {item['id']}
+
+Malha 3D gerada pelo Shap-E (OpenAI, Apache-2.0 — uso comercial liberado).
+
+* `modelo/modelo.glb` — arraste para Blender, Unity, Unreal ou Godot
+* `modelo/modelo.obj` — formato de texto, abre em qualquer lugar
+* `modelo/modelo.ply` — original, com cor por vertice
+* `modelo/previa.png` — como ficou
+
+Nao ha pesos aqui: a malha e o produto.
+
+Consolidado por julgamento seu: {item['detalhe']}
+"""
     else:
         raise RuntimeError("tipo sem empacotamento")
     if not origem.is_dir():
         raise RuntimeError("os arquivos desse treino nao foram encontrados")
     shutil.copytree(origem, dest / "modelo", ignore=shutil.ignore_patterns("runs"))
+    if item["tipo"] == "som-classificador":
+        (dest / "usar.py").write_text(_script_som(), encoding="utf-8")
+    if item["tipo"] == "som-estilo":
+        (dest / "usar.py").write_text(_script_som_estilo(item), encoding="utf-8")
     (dest / "README.md").write_text(leia, encoding="utf-8")
     (dest / "pacote.json").write_text(json.dumps({
         "tipo": item["tipo"], "id": item["id"], "detalhe": item["detalhe"],
@@ -280,6 +403,78 @@ Prova: {item['detalhe']}
         "criado": _now(),
     }, ensure_ascii=False, indent=2), encoding="utf-8")
     return {"ok": True}
+
+
+def _empacota_texto(run_id: str, row: dict, dest: Path, name: str, sistema: str,
+                    include_base: bool) -> None:
+    """Monta a pasta de um conhecimento de texto: adaptador + run.py + instalador.
+
+    Sai daqui separado do resto porque o mesmo bloco serve para o pacote de um
+    conhecimento so e para o pacote que junta varios.
+    """
+    cfg = load()
+    src = train._versions_dir() / run_id
+    dest.mkdir(parents=True, exist_ok=True)
+    _say(f"copiando o conhecimento treinado ({row['file']})")
+    shutil.copytree(src, dest / "adapter", ignore=shutil.ignore_patterns("runs"))
+    sample = "Quem e o dono deste modelo?"
+    try:
+        from agentepc import exam
+
+        quiz = exam.build(row["file"])
+        if quiz:
+            sample = quiz[0]["q"]
+    except Exception:
+        pass
+    # o adaptador so funciona no modelo em que foi treinado
+    base_treino = row.get("base_hf") or cfg["model"]["base_hf"]
+    if base_treino != cfg["model"]["base_hf"]:
+        _say(f"atencao: este conhecimento foi treinado em {base_treino}, "
+             f"diferente do modelo atual ({cfg['model']['base_hf']}). O pacote leva o de origem.")
+    _say(f"modelo de origem: {base_treino}")
+    (dest / "run.py").write_text(
+        RUN_PY % {"base_hf": base_treino, "system": SYSTEM}, encoding="utf-8"
+    )
+    (dest / "requirements.txt").write_text(REQS, encoding="utf-8")
+    info_sis = sistemas.por_id(sistema)
+    amostra = json.dumps(sample, ensure_ascii=False)
+    if sistema == "windows":
+        (dest / "instalar.ps1").write_text(INSTALL_PS1 % {"sample": amostra}, encoding="utf-8")
+    else:
+        sh = dest / "instalar.sh"
+        sh.write_text(
+            INSTALL_SH % {
+                "sample": amostra,
+                "sistema": info_sis["nome"],
+                "basico": sistemas.bloco_basico(sistema),
+            },
+            encoding="utf-8",
+        )
+        sh.chmod(0o755)
+    _say(f"instalador para {info_sis['nome']}")
+    if include_base:
+        snap = _base_snapshot()
+        if not snap:
+            raise RuntimeError("o Qwen nao esta no cache local; treine ou baixe uma vez antes de incluir a base")
+        _say("copiando o Qwen original (alguns GB, demora)")
+        shutil.copytree(snap, dest / "base", symlinks=False, ignore=shutil.ignore_patterns("*.pth", ".*"))
+    meta = {
+        "run_id": run_id,
+        "file": row["file"],
+        "facts": row.get("facts"),
+        "prova": row.get("tested") or [row.get("passed"), row.get("total")],
+        "consolidado": bool(row.get("consolidated")),
+        "base_hf": base_treino,
+        "modelo_ollama": row.get("modelo"),
+        "base_incluida": include_base,
+        "sistema": sistema,
+        "sistema_nome": (sistemas.por_id(sistema) or {}).get("nome", sistema),
+        "criado": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "prompt": prompt_for("SUA PERGUNTA"),
+    }
+    (dest / "pacote.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    (dest / "README.md").write_text(_readme(meta, name, sample), encoding="utf-8")
+    _say(f"pacote montado ({_size(dest) / 1e6:.0f} MB)")
 
 
 def start(run_id: str, name: str = "", include_base: bool = False, archive: bool = True,
@@ -335,69 +530,7 @@ def start(run_id: str, name: str = "", include_base: bool = False, archive: bool
 
     def _go() -> None:
         try:
-            cfg = load()
-            src = train._versions_dir() / run_id
-            dest.mkdir(parents=True)
-            _say(f"copiando o conhecimento treinado ({row['file']})")
-            shutil.copytree(src, dest / "adapter", ignore=shutil.ignore_patterns("runs"))
-            sample = "Quem e o dono deste modelo?"
-            try:
-                from agentepc import exam
-
-                quiz = exam.build(row["file"])
-                if quiz:
-                    sample = quiz[0]["q"]
-            except Exception:
-                pass
-            # o adaptador so funciona no modelo em que foi treinado
-            base_treino = row.get("base_hf") or cfg["model"]["base_hf"]
-            if base_treino != cfg["model"]["base_hf"]:
-                _say(f"atencao: este conhecimento foi treinado em {base_treino}, "
-                     f"diferente do modelo atual ({cfg['model']['base_hf']}). O pacote leva o de origem.")
-            _say(f"modelo de origem: {base_treino}")
-            (dest / "run.py").write_text(
-                RUN_PY % {"base_hf": base_treino, "system": SYSTEM}, encoding="utf-8"
-            )
-            (dest / "requirements.txt").write_text(REQS, encoding="utf-8")
-            info_sis = sistemas.por_id(sistema)
-            amostra = json.dumps(sample, ensure_ascii=False)
-            if sistema == "windows":
-                (dest / "instalar.ps1").write_text(INSTALL_PS1 % {"sample": amostra}, encoding="utf-8")
-            else:
-                sh = dest / "instalar.sh"
-                sh.write_text(
-                    INSTALL_SH % {
-                        "sample": amostra,
-                        "sistema": info_sis["nome"],
-                        "basico": sistemas.bloco_basico(sistema),
-                    },
-                    encoding="utf-8",
-                )
-                sh.chmod(0o755)
-            _say(f"instalador para {info_sis['nome']}")
-            if include_base:
-                snap = _base_snapshot()
-                if not snap:
-                    raise RuntimeError("o Qwen nao esta no cache local; treine ou baixe uma vez antes de incluir a base")
-                _say("copiando o Qwen original (alguns GB, demora)")
-                shutil.copytree(snap, dest / "base", symlinks=False, ignore=shutil.ignore_patterns("*.pth", ".*"))
-            meta = {
-                "run_id": run_id,
-                "file": row["file"],
-                "facts": row.get("facts"),
-                "prova": row.get("tested") or [row.get("passed"), row.get("total")],
-                "consolidado": bool(row.get("consolidated")),
-                "base_hf": base_treino,
-                "modelo_ollama": row.get("modelo"),
-                "base_incluida": include_base,
-                "sistema": sistema,
-                "sistema_nome": (sistemas.por_id(sistema) or {}).get("nome", sistema),
-                "criado": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                "prompt": prompt_for("SUA PERGUNTA"),
-            }
-            (dest / "pacote.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-            (dest / "README.md").write_text(_readme(meta, name, sample), encoding="utf-8")
-            _say(f"pacote montado ({_size(dest) / 1e6:.0f} MB)")
+            _empacota_texto(run_id, row, dest, name, sistema, include_base)
             if archive:
                 _say("compactando para upload")
                 tgz = _jobs_dir() / f"{name}.tar.gz"
@@ -413,6 +546,174 @@ def start(run_id: str, name: str = "", include_base: bool = False, archive: bool
 
     threading.Thread(target=_go, name="export", daemon=True).start()
     return {"accepted": True, "name": name}
+
+
+
+# o que cada tipo precisa que esteja instalado na maquina que recebe o pacote
+PIP_POR_TIPO = {
+    "texto": ["torch", "transformers>=4.44", "peft", "accelerate", "bitsandbytes"],
+    "imagem": ["torch", "diffusers>=0.31", "peft", "transformers>=4.44", "safetensors"],
+    "classificador": ["torch", "torchvision", "pillow"],
+    "som-classificador": ["torch", "torchvision", "soundfile", "scipy", "numpy"],
+    "som-estilo": ["torch", "transformers>=4.44", "peft", "soundfile", "sentencepiece"],
+    "3d": [],
+}
+
+COMO_USAR = {
+    "texto": "cd texto/{id} && ../../.venv/bin/python run.py \"sua pergunta\"",
+    "imagem": "copie imagem/{id}/modelo/*.safetensors para a pasta Lora do seu Automatic1111/ComfyUI",
+    "classificador": "cd classificador/{id} && ../../.venv/bin/python ... (veja o README de dentro)",
+    "som-classificador": "cd som-classificador/{id} && ../../.venv/bin/python usar.py audio.wav",
+    "som-estilo": "cd som-estilo/{id} && ../../.venv/bin/python usar.py \"o que voce quer ouvir\" 8",
+    "3d": "abra 3d/{id}/modelo/modelo.glb no Blender ou no motor de jogo",
+}
+
+INSTALL_CONJUNTO = '''#!/usr/bin/env bash
+# Instala o que este pacote precisa em %(sistema)s. Uma venv so, usada por todas as pecas.
+set -uo pipefail
+cd "$(dirname "$0")"
+FALHAS=""
+SUDO=""
+[ "$(id -u)" = 0 ] || { command -v sudo >/dev/null && SUDO="sudo"; }
+
+%(basico)s
+PY=${PY:-python3}
+$PY -m venv .venv
+.venv/bin/pip install --upgrade pip
+.venv/bin/pip install %(pacotes)s || { echo "FALHOU a instalacao dos pacotes"; exit 1; }
+%(ollama)s
+echo
+echo "== o que veio neste pacote"
+%(linhas)s
+echo
+echo "Cada pasta tem o seu README com os detalhes."
+'''
+
+OLLAMA_SH = '''
+if ! command -v ollama >/dev/null; then
+  echo "== instalando o Ollama (o conhecimento de texto precisa do modelo base)"
+  curl -fsSL https://ollama.com/install.sh | sh || echo "instale o Ollama a mao: ollama.com"
+fi
+'''
+
+
+def _readme_conjunto(itens: list[dict], name: str, sistema: str) -> str:
+    """Indice do pacote: o que tem dentro, em cima de que roda, e o que NAO da para fazer."""
+    linhas = [f"# {name}", "",
+              f"Pacote com {len(itens)} conhecimento(s) treinado(s), montado para "
+              f"**{(sistemas.por_id(sistema) or {}).get('nome', sistema)}**.", "",
+              "```bash", "./instalar.sh", "```", "",
+              "## O que veio", "",
+              "| Tipo | Nome | Roda em cima de | Como usar |", "|---|---|---|---|"]
+    for item in itens:
+        como = COMO_USAR.get(item["tipo"], "veja o README da pasta").format(id=item["id"])
+        linhas.append(f"| {item['tipo']} | `{item['id']}` | {item.get('modelo') or '—'} | `{como}` |")
+    textos = [i for i in itens if i["tipo"] == "texto"]
+    linhas += ["", "## O que este pacote NAO faz", ""]
+    if len(textos) > 1:
+        linhas.append(
+            f"**Os {len(textos)} conhecimentos de texto nao viram um so.** Cada adaptador "
+            "responde bem o que treinou e atrapalha o resto, entao eles carregam um de cada "
+            "vez. Para ter os dois juntos numa resposta so, treine os arquivos JUNTOS na "
+            "pagina Treino e exporte o resultado — medi as duas formas, e so essa funciona.")
+    else:
+        linhas.append("Cada peca roda por si. Um LoRA de imagem nao entra no modelo de texto, "
+                      "e um de som nao entra no de imagem: sao modelos base diferentes.")
+    bases = sorted({i.get("modelo") or "" for i in itens if i.get("modelo")})
+    if bases:
+        linhas += ["", "## Modelos de origem", "",
+                   "Cada adaptador so funciona no modelo em que foi treinado:", ""]
+        linhas += [f"* `{b}`" for b in bases]
+    if any(i["tipo"] == "som-estilo" for i in itens):
+        linhas += ["", "> **Licenca do som:** o MusicGen e CC-BY-NC. O LoRA e seu, mas o audio "
+                   "gerado por ele nao pode ser vendido."]
+    linhas += ["", f"Montado em {_now()}."]
+    return "\n".join(linhas) + "\n"
+
+
+def start_varios(ids: list[str], name: str = "", include_base: bool = False,
+                 archive: bool = True, sistema: str = "ubuntu") -> dict:
+    """Junta varios conhecimentos consolidados num pacote so.
+
+    Nao e fusao: cada peca vai inteira, na sua pasta, com o que precisa para rodar. Fundir
+    adaptadores foi testado neste projeto e piora tudo — o README do pacote explica isso a
+    quem receber, para ninguem tentar de novo.
+    """
+    if _job["state"] == "running":
+        return {"accepted": False, "reason": "ja tem um pacote sendo montado"}
+    if train.job_status()["state"] == "running":
+        return {"accepted": False, "reason": "treino em andamento; espere ou pare"}
+    disponiveis = {i["id"]: i for i in prontos()}
+    escolhidos = [disponiveis[i] for i in ids if i in disponiveis]
+    if not escolhidos:
+        return {"accepted": False, "reason": "escolha pelo menos um conhecimento consolidado"}
+    faltando = [i for i in ids if i not in disponiveis]
+    if faltando:
+        return {"accepted": False,
+                "reason": f"nao estao consolidados (ou nao tem pesos): {', '.join(faltando)}"}
+    if not sistemas.por_id(sistema):
+        return {"accepted": False, "reason": "sistema desconhecido"}
+    name = re.sub(r"[^a-z0-9_-]+", "-", (name or "pacote-completo").lower()).strip("-")
+    dest = _jobs_dir() / name
+    if dest.exists():
+        return {"accepted": False, "reason": f"ja existe um pacote chamado {name}"}
+    rows = {r["id"]: r for r in train._rows() if r.get("snapshot")}
+    _job.update({"state": "running", "lines": [], "name": name, "path": str(dest)})
+
+    def _go() -> None:
+        try:
+            dest.mkdir(parents=True)
+            pacotes: list[str] = []
+            for item in escolhidos:
+                sub = dest / item["tipo"] / item["id"]
+                sub.mkdir(parents=True)
+                _say(f"empacotando {item['tipo']}: {item['id']}")
+                if item["tipo"] == "texto":
+                    _empacota_texto(item["id"], rows[item["id"]], sub, item["id"], sistema,
+                                    include_base)
+                else:
+                    _empacota_outro(item, sub, sistema)
+                for pacote in PIP_POR_TIPO.get(item["tipo"], []):
+                    if pacote not in pacotes:
+                        pacotes.append(pacote)
+            _say("montando o instalador do conjunto")
+            linhas = "\n".join(
+                f'echo "  {i["tipo"]}: {i["id"]}"' for i in escolhidos)
+            script = INSTALL_CONJUNTO % {
+                "sistema": (sistemas.por_id(sistema) or {}).get("nome", sistema),
+                "basico": sistemas.bloco_basico(sistema),
+                # sem aspas, o ">=" do pip viraria redirecionamento do shell
+                "pacotes": " ".join(shlex.quote(x) for x in pacotes) or "pip",
+                "ollama": OLLAMA_SH if any(i["tipo"] == "texto" for i in escolhidos) else "",
+                "linhas": linhas,
+            }
+            alvo = dest / "instalar.sh"
+            alvo.write_text(script, encoding="utf-8")
+            alvo.chmod(0o755)
+            (dest / "README.md").write_text(_readme_conjunto(escolhidos, name, sistema),
+                                            encoding="utf-8")
+            (dest / "pacote.json").write_text(json.dumps({
+                "conjunto": True, "itens": [
+                    {"tipo": i["tipo"], "id": i["id"], "modelo": i.get("modelo", ""),
+                     "detalhe": i.get("detalhe", "")} for i in escolhidos],
+                "sistema": sistema, "pip": pacotes, "criado": _now(),
+            }, ensure_ascii=False, indent=2), encoding="utf-8")
+            _say(f"pacote montado ({_size(dest) / 1e6:.0f} MB)")
+            if archive:
+                _say("compactando para upload")
+                tgz = _jobs_dir() / f"{name}.tar.gz"
+                with tarfile.open(tgz, "w:gz") as tar:
+                    tar.add(dest, arcname=name)
+                _say(f"arquivo pronto: {tgz.name} ({tgz.stat().st_size / 1e6:.0f} MB)")
+            _job["state"] = "done"
+            _say("copie a pasta (ou o .tar.gz) para a outra maquina e rode ./instalar.sh")
+        except Exception as exc:
+            shutil.rmtree(dest, ignore_errors=True)
+            _job["state"] = "error"
+            _say(f"erro: {exc}")
+
+    threading.Thread(target=_go, name="export-conjunto", daemon=True).start()
+    return {"accepted": True, "name": name, "itens": len(escolhidos)}
 
 
 def delete(name: str) -> dict:

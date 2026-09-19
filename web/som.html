@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>agente-pc — som</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <nav>
+      <a href="/">Chat</a>
+      <a href="/arquivo.html">Arquivos</a>
+      <a href="/preparar.html">Preparar dados</a>
+      <a href="/treino.html">Treino</a>
+      <a href="/imagens.html">Imagens</a>
+      <a href="/classificador.html">Classificador</a>
+      <a href="/som.html">Som</a>
+      <a href="/tresd.html">3D</a>
+      <a href="/exportar.html">Exportar</a>
+      <a href="/ambiente.html">Ambiente</a>
+    </nav>
+    <header>
+      <div>
+        <h1>Som</h1>
+        <div class="sub">Três coisas diferentes moram aqui: <strong>classificar</strong> som (tem prova automática), <strong>gerar</strong> som novo e <strong>ensinar um estilo</strong> ao gerador (essas duas quem julga é o seu ouvido).</div>
+      </div>
+      <div class="controls"><span id="gpuPill" class="pill off">verificando…</span></div>
+    </header>
+
+    <section class="card">
+      <h2>1. Juntar áudio</h2>
+      <p class="note">Busca na Openverse (que indexa o Freesound) e no Wikimedia Commons, guardando autor e licença de cada faixa em <code>creditos.json</code>. Spotify, YouTube e Deezer ficam de fora de propósito: os termos de uso deles proíbem baixar e treinar, e isso não muda por a ferramenta rodar na sua máquina. Áudio seu é só largar numa pasta dentro de <code>data/sons/</code>.</p>
+      <div class="grid2">
+        <input id="termo" type="text" placeholder="o som que você procura, em inglês (ex.: diesel engine)" />
+        <input id="nomeColecao" type="text" placeholder="nome da coleção (opcional)" />
+        <label class="sub">Quantas <input id="quantidade" type="number" value="20" min="4" max="120" /></label>
+        <label class="sub">Licença
+          <select id="licenca">
+            <option value="livres">livres (CC0, domínio público, BY, BY-SA)</option>
+            <option value="sem-comercial">inclui uso não comercial</option>
+            <option value="todas">todas (confira caso a caso)</option>
+          </select>
+        </label>
+      </div>
+      <div class="controls">
+        <button id="coletarBtn" class="primary" type="button">Buscar áudio</button>
+        <button id="coletarStop" class="danger" type="button" disabled>Parar</button>
+        <span id="coletaSpin" class="spin" aria-hidden="true"></span>
+        <span id="coletaNota" class="note"></span>
+      </div>
+      <div id="coletaLog"></div>
+      <ul id="colecoes" class="runs"></ul>
+    </section>
+
+    <section class="card">
+      <h2>2. Classificador de som <span class="sub">(este tem prova de verdade)</span></h2>
+      <p class="note">Uma categoria por coleção. O áudio vira espectrograma — uma imagem do som — e um quarto das faixas fica <strong>fora do treino</strong> para a prova. Se acertar muito no treino e pouco na prova, decorou, e a página avisa.</p>
+      <div class="grid2">
+        <input id="conjunto" type="text" placeholder="nome do conjunto (ex.: motor)" />
+        <input id="classe" type="text" placeholder="categoria (ex.: batendo)" />
+        <select id="colecaoImportar"></select>
+        <button id="importarBtn" type="button">Usar esta coleção como categoria</button>
+      </div>
+      <ul id="conjuntos" class="runs"></ul>
+      <div class="grid2">
+        <select id="conjuntoSel"></select>
+        <input id="nomeModelo" type="text" placeholder="nome do classificador (opcional)" />
+        <label class="sub">Épocas <input id="epocas" type="number" value="8" min="1" max="60" /></label>
+        <label class="sub">Acerto mínimo <input id="limiar" type="number" value="0.9" min="0.5" max="1" step="0.05" /></label>
+      </div>
+      <div class="controls">
+        <button id="treinarBtn" class="primary" type="button">Treinar classificador</button>
+        <button id="treinoStop" class="danger" type="button" disabled>Parar</button>
+        <span id="treinoSpin" class="spin" aria-hidden="true"></span>
+        <span id="treinoNota" class="note"></span>
+      </div>
+      <div id="treinoBar" class="bar"><span></span></div>
+      <div id="treinoLog"></div>
+      <ul id="modelos" class="runs"></ul>
+    </section>
+
+    <section class="card">
+      <h2>3. Gerar som</h2>
+      <p class="note">O MusicGen escreve áudio novo a partir de uma frase em inglês. Ele é <strong>CC-BY-NC</strong>: serve para testar e para uso interno, mas o áudio gerado não pode ser vendido. Cada segundo pedido são ~50 fichas; 8 s levam menos de um minuto na sua placa.</p>
+      <div class="grid2">
+        <input id="pedido" type="text" placeholder="o que você quer ouvir, em inglês (ex.: soft rain on a metal roof)" />
+        <label class="sub">Segundos <input id="segundos" type="number" value="8" min="2" max="30" /></label>
+        <label class="sub">Com o seu estilo <select id="estiloSel"><option value="">só o modelo base</option></select></label>
+      </div>
+      <div class="controls">
+        <button id="gerarBtn" class="primary" type="button">Gerar som</button>
+        <span id="gerarSpin" class="spin" aria-hidden="true"></span>
+        <span id="gerarNota" class="note"></span>
+      </div>
+      <div id="gerarLog"></div>
+      <ul id="gerados" class="runs"></ul>
+    </section>
+
+    <section class="card">
+      <h2>4. Ensinar um estilo ao gerador</h2>
+      <p class="note">As faixas da coleção viram fichas de áudio e um LoRA aprende a soar como elas. Não há selo verde automático: gere um som com o estilo, ouça, e aprove no <a href="/">Chat</a>. Com menos de 20 faixas o resultado costuma ser fraco — é honesto dizer isso antes de você gastar meia hora.</p>
+      <div class="grid2">
+        <select id="colecaoEstilo"></select>
+        <input id="gatilho" type="text" placeholder="gatilho (ex.: lo-fi guitar loop)" />
+        <label class="sub">Passos <input id="passosEstilo" type="number" value="200" min="20" max="2000" step="20" /></label>
+        <input id="nomeEstilo" type="text" placeholder="nome do estilo (opcional)" />
+      </div>
+      <div class="controls">
+        <button id="estiloBtn" class="primary" type="button">Treinar estilo de som</button>
+        <span id="estiloNota" class="note"></span>
+      </div>
+      <ul id="estilos" class="runs"></ul>
+    </section>
+  </div>
+  <script src="/app.js"></script>
+  <script>
+    let poll = null;
+
+    function mb(n) { return n >= 1e6 ? (n / 1e6).toFixed(1) + " MB" : Math.round(n / 1000) + " KB"; }
+
+    function logBox(id, linhas) {
+      const box = document.getElementById(id);
+      box.innerHTML = "";
+      (linhas || []).slice(-8).forEach((l) => appendLine(id, l, "msg sys" + (/erro|FALHOU/i.test(l) ? " bad" : "")));
+    }
+
+    function opcoesDe(sel, itens, rotulo) {
+      const antes = sel.value;
+      sel.innerHTML = "";
+      itens.forEach((it) => {
+        const o = document.createElement("option");
+        o.value = it.id; o.textContent = rotulo(it);
+        sel.appendChild(o);
+      });
+      if (antes) sel.value = antes;
+    }
+
+    async function pinta() {
+      const j = await api("/api/som");
+      const c = j.coleta, t = j.treino, g = j.geracao;
+
+      const rodandoC = c.state === "running";
+      document.getElementById("coletaSpin").classList.toggle("on", rodandoC);
+      document.getElementById("coletarBtn").disabled = rodandoC;
+      document.getElementById("coletarStop").disabled = !rodandoC;
+      document.getElementById("coletaNota").textContent = c.alvo ? c.baixadas + "/" + c.alvo : "";
+      logBox("coletaLog", c.linhas);
+
+      const ul = document.getElementById("colecoes");
+      ul.innerHTML = "";
+      (c.colecoes || []).forEach((col) => {
+        const li = document.createElement("li");
+        const bloco = document.createElement("div");
+        const info = document.createElement("div");
+        info.textContent = col.id + " · " + col.faixas + " faixa(s) · " + mb(col.bytes) +
+          (col.licenca ? " · licença: " + col.licenca : "");
+        const nota = document.createElement("div");
+        nota.className = "note"; nota.textContent = col.termo || "";
+        bloco.append(info, nota);
+        const del = document.createElement("button");
+        del.className = "danger small"; del.type = "button"; del.textContent = "Apagar";
+        del.onclick = async () => {
+          if (!confirm("Apagar a coleção " + col.id + "?")) return;
+          await api("/api/som-colecao-delete", { id: col.id }); pinta();
+        };
+        li.append(bloco, del); ul.appendChild(li);
+      });
+      opcoesDe(document.getElementById("colecaoImportar"), c.colecoes || [],
+               (col) => col.id + " (" + col.faixas + ")");
+      opcoesDe(document.getElementById("colecaoEstilo"), c.colecoes || [],
+               (col) => col.id + " (" + col.faixas + ")");
+
+      const conj = document.getElementById("conjuntos");
+      conj.innerHTML = "";
+      (t.conjuntos || []).forEach((cj) => {
+        const li = document.createElement("li");
+        const txt = Object.entries(cj.classes).map(([k, v]) => k + " (" + v + ")").join(" · ");
+        li.textContent = cj.id + " → " + (txt || "sem categoria ainda");
+        conj.appendChild(li);
+      });
+      opcoesDe(document.getElementById("conjuntoSel"), t.conjuntos || [],
+               (cj) => cj.id + " (" + cj.total + " faixa(s))");
+
+      const rodandoT = t.state === "running" || t.state === "parando";
+      document.getElementById("treinoSpin").classList.toggle("on", rodandoT);
+      document.getElementById("treinarBtn").disabled = rodandoT;
+      document.getElementById("treinoStop").disabled = !rodandoT;
+      document.getElementById("estiloBtn").disabled = rodandoT;
+      document.getElementById("treinoNota").textContent = t.epocas
+        ? (t.tipo === "estilo" ? "passo " + t.epoca + "/" + t.epocas
+                               : "época " + t.epoca + "/" + t.epocas + " · prova " + Math.round((t.acerto || 0) * 100) + "%")
+        : "";
+      const barra = document.getElementById("treinoBar");
+      barra.classList.toggle("on", rodandoT || t.state === "done");
+      barra.classList.toggle("good", t.state === "done" && t.consolidado);
+      barra.firstElementChild.style.width = (t.epocas ? Math.min(100, (t.epoca / t.epocas) * 100) : 0) + "%";
+      logBox("treinoLog", t.linhas);
+
+      const mods = document.getElementById("modelos");
+      mods.innerHTML = "";
+      (t.modelos || []).forEach((m) => {
+        const li = document.createElement("li");
+        const bloco = document.createElement("div");
+        const tit = document.createElement("div");
+        tit.textContent = (m.consolidado ? "🟢 " : "⚪ ") + m.id + " · " +
+          Math.round((m.acerto_prova || 0) * 100) + "% em " + (m.pedacos_prova || 0) + " pedaço(s) nunca ouvido(s)";
+        const nota = document.createElement("div");
+        nota.className = "note";
+        nota.textContent = "categorias: " + (m.classes || []).join(", ") +
+          " · treino " + Math.round((m.acerto_treino || 0) * 100) + "%";
+        bloco.append(tit, nota);
+        const del = document.createElement("button");
+        del.className = "danger small"; del.type = "button"; del.textContent = "Apagar";
+        del.onclick = async () => {
+          if (!confirm("Apagar o classificador " + m.id + "?")) return;
+          await api("/api/som-modelo-delete", { id: m.id }); pinta();
+        };
+        li.append(bloco, del); mods.appendChild(li);
+      });
+
+      const rodandoG = g.state === "running";
+      document.getElementById("gerarSpin").classList.toggle("on", rodandoG);
+      document.getElementById("gerarBtn").disabled = rodandoG;
+      logBox("gerarLog", g.linhas);
+      const ger = document.getElementById("gerados");
+      ger.innerHTML = "";
+      (g.arquivos || []).forEach((a) => {
+        const li = document.createElement("li");
+        const bloco = document.createElement("div");
+        const tit = document.createElement("div");
+        tit.textContent = a.arquivo + (a.estilo ? " · estilo: " + a.estilo : "");
+        const nota = document.createElement("div");
+        nota.className = "note"; nota.textContent = (a.pedido || "") + " · " + mb(a.bytes);
+        const audio = document.createElement("audio");
+        audio.controls = true; audio.src = "/baixar/sons-gerados/" + a.arquivo;
+        bloco.append(tit, nota, audio);
+        const del = document.createElement("button");
+        del.className = "danger small"; del.type = "button"; del.textContent = "Apagar";
+        del.onclick = async () => { await api("/api/som-gerado-delete", { id: a.arquivo }); pinta(); };
+        li.append(bloco, del); ger.appendChild(li);
+      });
+
+      const est = await api("/api/som-estilos");
+      const sel = document.getElementById("estiloSel");
+      const antes = sel.value;
+      sel.innerHTML = '<option value="">só o modelo base</option>';
+      const lista = document.getElementById("estilos");
+      lista.innerHTML = "";
+      (est.itens || []).forEach((e) => {
+        const o = document.createElement("option");
+        o.value = e.id; o.textContent = e.id;
+        sel.appendChild(o);
+        const li = document.createElement("li");
+        const bloco = document.createElement("div");
+        const tit = document.createElement("div");
+        tit.textContent = e.id + " · gatilho: \"" + (e.gatilho || "") + "\"";
+        const nota = document.createElement("div");
+        nota.className = "note";
+        nota.textContent = (e.passos || 0) + " passos · " + (e.faixas || 0) + " faixa(s) · base " + (e.base || "");
+        bloco.append(tit, nota);
+        const del = document.createElement("button");
+        del.className = "danger small"; del.type = "button"; del.textContent = "Apagar";
+        del.onclick = async () => {
+          if (!confirm("Apagar o estilo " + e.id + "?")) return;
+          await api("/api/som-estilo-delete", { id: e.id }); pinta();
+        };
+        li.append(bloco, del); lista.appendChild(li);
+      });
+      if (antes) sel.value = antes;
+
+      const cap = await api("/api/capacidades");
+      const som = (cap.itens || []).filter((i) => i.id.indexOf("som") >= 0);
+      const bloqueado = som.filter((i) => i.situacao !== "disponivel");
+      const gp = document.getElementById("gpuPill");
+      gp.textContent = bloqueado.length ? bloqueado[0].motivo.slice(0, 60) : "tudo pronto para som";
+      gp.className = "pill " + (bloqueado.length ? "off" : "on");
+
+      const parado = !rodandoC && !rodandoT && !rodandoG;
+      if (parado && poll) { clearInterval(poll); poll = null; }
+      if (!parado && !poll) poll = setInterval(() => pinta().catch(() => {}), 3000);
+    }
+
+    function nota(id, msg, ruim) {
+      const el = document.getElementById(id);
+      el.textContent = msg; el.className = "note" + (ruim ? " bad" : "");
+    }
+
+    document.getElementById("coletarBtn").onclick = async () => {
+      const r = await api("/api/som-coletar", {
+        termo: document.getElementById("termo").value,
+        nome: document.getElementById("nomeColecao").value,
+        quantidade: +document.getElementById("quantidade").value,
+        licenca: document.getElementById("licenca").value,
+      });
+      if (!r.accepted) return nota("coletaNota", r.reason, true);
+      pinta();
+    };
+    document.getElementById("coletarStop").onclick = async () => { await api("/api/som-coletar-stop", {}); pinta(); };
+
+    document.getElementById("importarBtn").onclick = async () => {
+      const r = await api("/api/som-importar", {
+        conjunto: document.getElementById("conjunto").value,
+        classe: document.getElementById("classe").value,
+        colecao: document.getElementById("colecaoImportar").value,
+      });
+      nota("treinoNota", r.ok ? r.copiadas + " faixa(s) copiada(s)" : r.reason, !r.ok);
+      pinta();
+    };
+
+    document.getElementById("treinarBtn").onclick = async () => {
+      const r = await api("/api/som-treinar", {
+        conjunto: document.getElementById("conjuntoSel").value,
+        epocas: +document.getElementById("epocas").value,
+        nome: document.getElementById("nomeModelo").value,
+        limiar: +document.getElementById("limiar").value,
+      });
+      if (!r.accepted) return nota("treinoNota", r.reason, true);
+      pinta();
+    };
+    document.getElementById("treinoStop").onclick = async () => { await api("/api/som-stop", {}); pinta(); };
+
+    document.getElementById("gerarBtn").onclick = async () => {
+      const r = await api("/api/som-gerar", {
+        pedido: document.getElementById("pedido").value,
+        segundos: +document.getElementById("segundos").value,
+        estilo: document.getElementById("estiloSel").value,
+      });
+      if (!r.accepted) return nota("gerarNota", r.reason, true);
+      nota("gerarNota", "gerando…");
+      pinta();
+    };
+
+    document.getElementById("estiloBtn").onclick = async () => {
+      const r = await api("/api/som-estilo-treinar", {
+        colecao: document.getElementById("colecaoEstilo").value,
+        passos: +document.getElementById("passosEstilo").value,
+        nome: document.getElementById("nomeEstilo").value,
+        gatilho: document.getElementById("gatilho").value,
+      });
+      if (!r.accepted) return nota("estiloNota", r.reason, true);
+      nota("estiloNota", r.faixas + " faixa(s) · gatilho \"" + r.gatilho + "\"");
+      pinta();
+    };
+
+    pinta().catch((e) => nota("coletaNota", e.message, true));
+  </script>
+</body>
+</html>

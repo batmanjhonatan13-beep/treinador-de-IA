@@ -14,6 +14,9 @@
       <a href="/preparar.html">Preparar dados</a>
       <a href="/treino.html">Treino</a>
       <a href="/imagens.html">Imagens</a>
+      <a href="/classificador.html">Classificador</a>
+      <a href="/som.html">Som</a>
+      <a href="/tresd.html">3D</a>
       <a href="/exportar.html">Exportar</a>
       <a href="/ambiente.html">Ambiente</a>
     </nav>
@@ -37,6 +40,8 @@
     <div class="controls" id="abas">
       <button id="abaTexto" class="primary" type="button">Texto</button>
       <button id="abaImagem" type="button">Imagem</button>
+      <button id="abaSom" type="button">Som</button>
+      <button id="abaTresd" type="button">3D</button>
       <span id="abaNota" class="note"></span>
     </div>
     <div id="log"></div>
@@ -56,6 +61,49 @@
       </div>
       <div id="galeria"></div>
       <div class="controls" id="julgar"></div>
+    </section>
+
+    <section class="card hidden-block" id="painelSom">
+      <h2>Testar som</h2>
+      <p class="note">Gere com o seu estilo e <strong>ouça</strong>: é assim que se julga som treinado, porque não existe resposta certa. O classificador de som, esse sim, já vem com a nota da prova.</p>
+      <div class="grid2">
+        <select id="estiloSom"></select>
+        <label class="sub">Segundos <input id="segundosSom" type="number" value="8" min="2" max="30" /></label>
+      </div>
+      <input id="pedidoSom" type="text" placeholder="o som que você quer, em inglês (ex.: soft rain on a metal roof)" />
+      <div class="controls">
+        <button id="gerarSom" class="primary" type="button">Gerar som</button>
+        <span id="somSpin" class="spin" aria-hidden="true"></span>
+        <span id="somNota" class="note"></span>
+      </div>
+      <ul id="somLista" class="runs"></ul>
+      <div class="controls" id="julgarSom"></div>
+      <h2>Perguntar ao classificador</h2>
+      <p class="note">Escolha um áudio e veja o que o classificador treinado responde — com a certeza de cada categoria.</p>
+      <div class="grid2">
+        <select id="classSom"></select>
+        <select id="audioSom"></select>
+      </div>
+      <div class="controls">
+        <button id="ouvirBtn" type="button">O que ele ouviu?</button>
+        <span id="ouvirNota" class="note"></span>
+      </div>
+    </section>
+
+    <section class="card hidden-block" id="painelTresd">
+      <h2>Testar 3D</h2>
+      <p class="note">O Shap-E gera a malha em segundos. Não é treino — é modelo pronto; o que dá para treinar é a <a href="/imagens.html">imagem</a> que vira a malha. Aprove a peça que prestar para ela entrar no <a href="/exportar.html">Exportar</a>.</p>
+      <div class="grid2">
+        <input id="pedido3d" type="text" placeholder="o que você quer, em inglês (ex.: a wooden chair)" />
+        <label class="sub">Passos <input id="passos3d" type="number" value="64" min="16" max="128" step="8" /></label>
+      </div>
+      <div class="controls">
+        <button id="gerar3d" class="primary" type="button">Gerar 3D</button>
+        <span id="tresdSpin" class="spin" aria-hidden="true"></span>
+        <span id="tresdNota" class="note"></span>
+      </div>
+      <ul id="tresdLista" class="runs"></ul>
+      <div class="controls" id="julgar3d"></div>
     </section>
     <form id="form" class="row">
       <textarea id="q" rows="2" placeholder="Pergunte ao modelo local…" required></textarea>
@@ -185,16 +233,201 @@
     let pollGerar = null;
     const painel = document.getElementById("painelImagem");
 
+    const ABAS = { texto: "abaTexto", imagem: "abaImagem", som: "abaSom", tresd: "abaTresd" };
+    const PAINEIS = { imagem: "painelImagem", som: "painelSom", tresd: "painelTresd" };
+
     function aba(qual) {
-      painel.classList.toggle("open", qual === "imagem");
-      document.getElementById("log").style.display = qual === "imagem" ? "none" : "";
-      document.getElementById("form").style.display = qual === "imagem" ? "none" : "";
-      document.getElementById("abaTexto").className = qual === "texto" ? "primary" : "";
-      document.getElementById("abaImagem").className = qual === "imagem" ? "primary" : "";
+      Object.entries(PAINEIS).forEach(([nome, id]) =>
+        document.getElementById(id).classList.toggle("open", nome === qual));
+      const conversa = qual === "texto";
+      document.getElementById("log").style.display = conversa ? "" : "none";
+      document.getElementById("form").style.display = conversa ? "" : "none";
+      Object.entries(ABAS).forEach(([nome, id]) =>
+        document.getElementById(id).className = nome === qual ? "primary" : "");
+      document.getElementById("abaNota").textContent = "";
       if (qual === "imagem") listaEstilos();
+      if (qual === "som") listaSom();
+      if (qual === "tresd") listaTresd();
     }
-    document.getElementById("abaTexto").onclick = () => aba("texto");
-    document.getElementById("abaImagem").onclick = () => aba("imagem");
+    Object.keys(ABAS).forEach((nome) =>
+      document.getElementById(ABAS[nome]).onclick = () => aba(nome));
+
+    // ---- aba de som ----
+    let pollSom = null;
+
+    function julgamento(caixa, tipo, item, simTxt, naoTxt, recarrega) {
+      caixa.innerHTML = "";
+      if (!item) return;
+      const txt = document.createElement("span");
+      txt.className = "note"; txt.textContent = item.detalhe;
+      const sim = document.createElement("button");
+      sim.className = "small primary"; sim.type = "button"; sim.textContent = simTxt;
+      sim.onclick = async () => { await api("/api/aprovar", { tipo, id: item.id, aprovado: true }); recarrega(); };
+      const nao = document.createElement("button");
+      nao.className = "small danger"; nao.type = "button"; nao.textContent = naoTxt;
+      nao.onclick = async () => { await api("/api/aprovar", { tipo, id: item.id, aprovado: false }); recarrega(); };
+      caixa.append(txt, sim, nao);
+    }
+
+    async function listaSom() {
+      const cap = await api("/api/capacidades");
+      const item = (cap.itens || []).find((i) => i.id === "som-gerar");
+      if (item && item.situacao !== "disponivel") {
+        document.getElementById("abaNota").textContent = "som indisponível: " + (item.motivo || item.situacao);
+        document.getElementById("gerarSom").disabled = true;
+      } else {
+        document.getElementById("gerarSom").disabled = false;
+      }
+      const j = await api("/api/consolidados");
+      const sel = document.getElementById("estiloSom");
+      const antes = sel.value;
+      sel.innerHTML = '<option value="">sem estilo (modelo puro)</option>';
+      j.itens.filter((i) => i.tipo === "som-estilo").forEach((i) => {
+        const op = document.createElement("option");
+        op.value = i.id;
+        op.textContent = (i.consolidado ? "🟢 " : i.reprovado ? "✕ " : "• ") + i.id + " — " + i.nome;
+        sel.appendChild(op);
+      });
+      if (antes) sel.value = antes;
+      julgamento(document.getElementById("julgarSom"), "som-estilo",
+                 j.itens.find((i) => i.tipo === "som-estilo" && i.id === sel.value),
+                 "Ficou parecido", "Não ficou", listaSom);
+
+      const s = await api("/api/som");
+      const lista = document.getElementById("somLista");
+      lista.innerHTML = "";
+      ((s.geracao || {}).arquivos || []).slice(0, 6).forEach((a) => {
+        const li = document.createElement("li");
+        const bloco = document.createElement("div");
+        const tit = document.createElement("div");
+        tit.textContent = (a.pedido || a.arquivo) + (a.estilo ? " · estilo: " + a.estilo : "");
+        const audio = document.createElement("audio");
+        audio.controls = true; audio.src = "/baixar/sons-gerados/" + a.arquivo;
+        bloco.append(tit, audio);
+        li.appendChild(bloco); lista.appendChild(li);
+      });
+
+      const cs = document.getElementById("classSom");
+      const antesC = cs.value;
+      cs.innerHTML = "";
+      ((s.treino || {}).modelos || []).forEach((m) => {
+        const o = document.createElement("option");
+        o.value = m.id;
+        o.textContent = (m.consolidado ? "🟢 " : "⚪ ") + m.id + " (" + Math.round((m.acerto_prova || 0) * 100) + "%)";
+        cs.appendChild(o);
+      });
+      if (antesC) cs.value = antesC;
+      const audios = await api("/api/audios");
+      const as = document.getElementById("audioSom");
+      const antesA = as.value;
+      as.innerHTML = "";
+      (audios.itens || []).forEach((a) => {
+        const o = document.createElement("option");
+        o.value = a; o.textContent = a;
+        as.appendChild(o);
+      });
+      if (antesA) as.value = antesA;
+    }
+    document.getElementById("estiloSom").onchange = () => listaSom();
+
+    document.getElementById("gerarSom").onclick = async () => {
+      const r = await api("/api/som-gerar", {
+        pedido: document.getElementById("pedidoSom").value,
+        segundos: +document.getElementById("segundosSom").value,
+        estilo: document.getElementById("estiloSom").value,
+      });
+      if (!r.accepted) { document.getElementById("somNota").textContent = r.reason; return; }
+      document.getElementById("somSpin").classList.add("on");
+      if (!pollSom) pollSom = setInterval(vigiaSom, 2500);
+    };
+
+    async function vigiaSom() {
+      const j = await api("/api/som");
+      const g = j.geracao || {};
+      document.getElementById("somNota").textContent = (g.linhas || []).slice(-1)[0] || "";
+      if (g.state === "running") return;
+      clearInterval(pollSom); pollSom = null;
+      document.getElementById("somSpin").classList.remove("on");
+      listaSom();
+    }
+
+    document.getElementById("ouvirBtn").onclick = async () => {
+      const r = await api("/api/som-ouvir", {
+        id: document.getElementById("classSom").value,
+        arquivo: document.getElementById("audioSom").value,
+      });
+      const nota = document.getElementById("ouvirNota");
+      if (!r.ok) { nota.textContent = r.reason; nota.className = "note bad"; return; }
+      nota.className = "note";
+      nota.textContent = "ouviu: " + r.resposta + " (" + Math.round(r.certeza * 100) + "% de certeza) · " +
+        Object.entries(r.todas).map(([k, v]) => k + " " + Math.round(v * 100) + "%").join(" · ");
+    };
+
+    // ---- aba de 3D ----
+    let poll3d = null;
+
+    async function listaTresd() {
+      const cap = await api("/api/capacidades");
+      const item = (cap.itens || []).find((i) => i.id === "imagem-para-3d");
+      if (item && item.situacao !== "disponivel") {
+        document.getElementById("abaNota").textContent = "3D indisponível: " + (item.motivo || item.situacao);
+        document.getElementById("gerar3d").disabled = true;
+      } else {
+        document.getElementById("gerar3d").disabled = false;
+      }
+      const j = await api("/api/consolidados");
+      const malhas = j.itens.filter((i) => i.tipo === "3d");
+      const lista = document.getElementById("tresdLista");
+      lista.innerHTML = "";
+      malhas.slice(0, 6).forEach((m) => {
+        const li = document.createElement("li");
+        const bloco = document.createElement("div");
+        const tit = document.createElement("div");
+        tit.textContent = (m.consolidado ? "🟢 " : m.reprovado ? "✕ " : "• ") + m.id + " — " + m.nome;
+        const links = document.createElement("div");
+        links.className = "note";
+        ["modelo.glb", "modelo.obj"].forEach((a) => {
+          const link = document.createElement("a");
+          link.href = "/baixar/modelos-3d/" + m.id + "/" + a;
+          link.textContent = a; link.download = a; link.style.marginRight = "10px";
+          links.appendChild(link);
+        });
+        bloco.append(tit, links);
+        (m.amostras || []).forEach((a) => {
+          const img = document.createElement("img");
+          img.src = "/img/modelos-3d/" + m.id + "/" + a;
+          img.style.maxWidth = "200px"; img.style.borderRadius = "8px"; img.style.marginTop = "6px";
+          bloco.appendChild(img);
+        });
+        const usar = document.createElement("button");
+        usar.className = "small"; usar.type = "button"; usar.textContent = "Julgar esta";
+        usar.onclick = () => julgamento(document.getElementById("julgar3d"), "3d", m,
+                                        "A malha presta", "Não presta", listaTresd);
+        li.append(bloco, usar); lista.appendChild(li);
+      });
+      if (malhas.length) julgamento(document.getElementById("julgar3d"), "3d", malhas[0],
+                                    "A malha presta", "Não presta", listaTresd);
+    }
+
+    document.getElementById("gerar3d").onclick = async () => {
+      const r = await api("/api/tresd-gerar", {
+        pedido: document.getElementById("pedido3d").value,
+        passos: +document.getElementById("passos3d").value,
+      });
+      if (!r.accepted) { document.getElementById("tresdNota").textContent = r.reason; return; }
+      document.getElementById("tresdSpin").classList.add("on");
+      if (!poll3d) poll3d = setInterval(vigia3d, 2500);
+    };
+
+    async function vigia3d() {
+      const j = await api("/api/tresd");
+      const g = j.geracao || {};
+      document.getElementById("tresdNota").textContent = (g.linhas || []).slice(-1)[0] || "";
+      if (g.state === "running") return;
+      clearInterval(poll3d); poll3d = null;
+      document.getElementById("tresdSpin").classList.remove("on");
+      listaTresd();
+    }
 
     async function listaEstilos() {
       const cap = await api("/api/capacidades");

@@ -144,6 +144,24 @@ else
 fi
 """
 
+PASSO_CAPACIDADES = r"""
+diga "treinos escolhidos: {nomes}"
+cd "{destino}"
+export PATH="$HOME/.local/bin:$PATH"
+command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+[ -x .venv-train/bin/python ] || uv venv .venv-train 2>/dev/null || python3 -m venv .venv-train
+if command -v uv >/dev/null; then
+  uv pip install --python .venv-train/bin/python {pacotes}
+else
+  .venv-train/bin/pip install {pacotes}
+fi
+if [ $? -eq 0 ]; then echo "OK treinos"; else
+  echo "FALHOU treinos — veja o erro do pip acima"
+  FALHAS="$FALHAS treinos"
+fi
+"""
+
 FECHO = r"""
 if [ -z "$FALHAS" ]; then echo "TUDO-OK"; else echo "ETAPAS-COM-FALHA:$FALHAS"; fi
 """
@@ -186,6 +204,13 @@ WIN_MODELO = r"""
 Diga "baixando o modelo {modelo}"
 ollama pull {modelo}
 """
+WIN_CAPACIDADES = r"""
+Diga "treinos escolhidos: {nomes}"
+Set-Location "{destino}"
+if (-not (Test-Path .\.venv-train)) {{ python -m venv .venv-train }}
+.\.venv-train\Scripts\python.exe -m pip install {pacotes}
+"""
+
 WIN_TREINO = r"""
 Diga "ambiente de treino"
 Set-Location "{destino}"
@@ -275,9 +300,32 @@ def detectar(alvo: dict) -> dict:
 MARCA_SENHA = "__SENHA__"
 
 
+def caminho_shell(caminho: str) -> str:
+    """Prepara a pasta de destino para entrar no script.
+
+    Dentro de aspas o `~` NAO expande: `cd "~/agente-pc"` procura uma pasta chamada `~`.
+    Trocando por `$HOME`, que expande entre aspas, o mesmo caminho funciona. Tambem corto
+    caractere que nao deveria estar num caminho — ele vai parar dentro de um comando.
+    """
+    import re as _re
+
+    caminho = (caminho or "").strip()
+    caminho = _re.sub(r"[^\w./~-]", "", caminho)
+    if caminho.startswith("~/"):
+        return "$HOME/" + caminho[2:]
+    if caminho == "~":
+        return "$HOME"
+    return caminho or "$HOME/agente-pc"
+
+
 def montar_script(info: dict, opcoes: dict, senha: str = MARCA_SENHA) -> str:
+    from agentepc import capacidades
+
     modelo = (load().get("model") or {}).get("name") or "qwen2.5:3b"
-    destino = opcoes.get("destino_dir") or str(ROOT)
+    treinos = [t for t in (opcoes.get("treinos") or []) if capacidades.PACOTES.get(t)]
+    pacotes = " ".join(shlex.quote(p) for p in capacidades.pacotes_de(treinos))
+    nomes_treinos = capacidades.nomes_de(treinos)
+    destino = caminho_shell(opcoes.get("destino_dir") or str(ROOT))
     porta = int(opcoes.get("porta") or 8765)
     if info.get("windows"):
         partes = [BASE_WIN]
@@ -289,7 +337,10 @@ def montar_script(info: dict, opcoes: dict, senha: str = MARCA_SENHA) -> str:
             partes.append(WIN_MODELO)
         if opcoes.get("treino"):
             partes.append(WIN_TREINO)
-        return "".join(p.format(modelo=modelo, destino=destino, porta=porta, basico="", senha="") for p in partes)
+        if treinos:
+            partes.append(WIN_CAPACIDADES)
+        return "".join(p.format(modelo=modelo, destino=destino, porta=porta, basico="", senha="",
+                                pacotes=pacotes, nomes=nomes_treinos) for p in partes)
 
     pkg = info.get("pkg", "apt-get")
     sistema = opcoes.get("sistema") or sistemas.detecta(info)
@@ -302,11 +353,13 @@ def montar_script(info: dict, opcoes: dict, senha: str = MARCA_SENHA) -> str:
         partes.append(PASSO_MODELO)
     if opcoes.get("treino"):
         partes.append(PASSO_TREINO)
+    if treinos:
+        partes.append(PASSO_CAPACIDADES)
     partes.append(FECHO)
     basico = sistemas.bloco_basico(sistema)
     return "".join(
         p.format(pkg=pkg, distro=info.get("distro", "?"), modelo=modelo, destino=destino,
-                 porta=porta, basico=basico, senha=senha)
+                 porta=porta, basico=basico, senha=senha, pacotes=pacotes, nomes=nomes_treinos)
         for p in partes
     )
 
@@ -318,8 +371,9 @@ def enviar_projeto(alvo: dict, destino_dir: str) -> None:
          "--exclude=./data/adapters", "-C", str(ROOT), "."],
         stdout=subprocess.PIPE,
     )
+    pasta = caminho_shell(destino_dir)
     alvo_cmd = ssh_args(alvo["destino"], alvo.get("porta", 22), alvo.get("chave", "")) + [
-        f"mkdir -p {shlex.quote(destino_dir)} && tar xzf - -C {shlex.quote(destino_dir)}"
+        f'mkdir -p "{pasta}" && tar xzf - -C "{pasta}"'
     ]
     subprocess.run(alvo_cmd, stdin=tar.stdout, check=True, timeout=600)
     tar.wait()

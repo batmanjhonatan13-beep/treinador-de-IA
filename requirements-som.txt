@@ -1,0 +1,6 @@
+transformers>=4.44
+soundfile
+scipy
+sentencepiece
+peft
+torchvision

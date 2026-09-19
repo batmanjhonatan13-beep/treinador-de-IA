@@ -11,13 +11,16 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from agentepc import classificador, imagem, train
+from agentepc import classificador, imagem, som, train, tresd
 from agentepc.config import resolve
 
 REGRAS = {
     "texto": "3 tentativas seguidas acertando a prova inteira sem consulta — automático",
     "classificador": "acerto na prova (imagens nunca vistas) acima do limiar — automático",
     "imagem": "você aprova as amostras — estilo não tem resposta certa",
+    "som-classificador": "acerto em faixas que ele nunca ouviu, acima do limiar — automático",
+    "som-estilo": "você ouve o som gerado e aprova — som não tem resposta certa",
+    "3d": "você olha a malha e aprova — não há gabarito de forma",
 }
 
 
@@ -67,6 +70,43 @@ def listar() -> list[dict]:
             "detalhe": f"{m.get('acerto_prova', 0):.0%} em {m.get('imagens_prova', 0)} "
                        f"imagem(ns) nunca vistas · classes: {', '.join(m.get('classes', []))}",
             "regra": REGRAS["classificador"], "automatico": True, "modelo": "resnet18",
+        })
+
+    for m in som.treinados():
+        saida.append({
+            "tipo": "som-classificador", "id": m["id"], "nome": m.get("conjunto", m["id"]),
+            "consolidado": bool(m.get("consolidado")),
+            "detalhe": f"{m.get('acerto_prova', 0):.0%} em {m.get('pedacos_prova', 0)} "
+                       f"pedaço(s) de faixas nunca ouvidas · categorias: "
+                       f"{', '.join(m.get('classes', []))}",
+            "regra": REGRAS["som-classificador"], "automatico": True, "modelo": "resnet18",
+        })
+
+    for e in som.estilos():
+        chave = f"som-estilo:{e['id']}"
+        julgado = aprov.get(chave)
+        saida.append({
+            "tipo": "som-estilo", "id": e["id"], "nome": e.get("gatilho") or e["id"],
+            "consolidado": bool(julgado and julgado["aprovado"]),
+            "reprovado": bool(julgado and not julgado["aprovado"]),
+            "detalhe": f"{e.get('passos', 0)} passos · {e.get('faixas', 0)} faixa(s)"
+                       + (f" · você aprovou em {julgado['quando'][:10]}" if julgado and julgado["aprovado"]
+                          else " · aguardando o seu ouvido" if not julgado else " · você reprovou"),
+            "regra": REGRAS["som-estilo"], "automatico": False, "modelo": e.get("base", ""),
+        })
+
+    for m in tresd.modelos():
+        chave = f"3d:{m['id']}"
+        julgado = aprov.get(chave)
+        saida.append({
+            "tipo": "3d", "id": m["id"], "nome": m.get("pedido") or m["id"],
+            "consolidado": bool(julgado and julgado["aprovado"]),
+            "reprovado": bool(julgado and not julgado["aprovado"]),
+            "detalhe": f"{m.get('origem', '')} · {m.get('passos', 0)} passos"
+                       + (f" · você aprovou em {julgado['quando'][:10]}" if julgado and julgado["aprovado"]
+                          else " · aguardando o seu julgamento" if not julgado else " · você reprovou"),
+            "regra": REGRAS["3d"], "automatico": False, "modelo": m.get("base", ""),
+            "amostras": [a for a in (m.get("arquivos") or []) if a.endswith(".png")],
         })
 
     for m in imagem.treinados():

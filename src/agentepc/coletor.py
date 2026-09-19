@@ -14,6 +14,8 @@ from __future__ import annotations
 import json
 import re
 import threading
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
@@ -22,7 +24,66 @@ from pathlib import Path
 from agentepc.config import resolve
 from agentepc.lotes import slug
 
-UA = {"User-Agent": "agente-pc/1.0 (treinador de IA local)"}
+UA = {"User-Agent": "agente-pc/1.0 (treinador de IA local; https://github.com/batmanjhonatan13-beep/treinador-de-IA)"}
+PAUSA = 0.7   # respiro entre pedidos: Openverse e Wikimedia cortam quem chega em rajada
+
+
+def _token() -> str:
+    """Chave da Openverse, se voce tiver uma.
+
+    Sem cadastro a Openverse libera poucas buscas por hora — e quando corta, responde 401.
+    Com uma chave (gratuita, em api.openverse.org/v1/auth_tokens/register) o teto sobe
+    muito. Vem de OPENVERSE_TOKEN no ambiente ou de `openverse_token:` no config.yaml.
+    """
+    import os
+
+    from agentepc.config import load
+
+    return (os.environ.get("OPENVERSE_TOKEN")
+            or str(load().get("openverse_token") or "")).strip()
+
+
+def abrir(url: str, timeout: int = 60, tentativas: int = 3) -> bytes:
+    """Busca uma URL com pausa e segunda chance.
+
+    Sem isso a coleta morre no meio a toa: o Wikimedia responde 429 ("devagar") quando
+    varios arquivos saem juntos, e a Openverse responde 401 para quem nao tem cadastro
+    depois de algumas buscas seguidas. Nos dois casos basta esperar um pouco.
+    """
+    erro: Exception = RuntimeError("sem tentativa")
+    for n in range(max(1, tentativas)):
+        time.sleep(PAUSA * (n + 1))
+        cabecalho = dict(UA)
+        if "openverse.org" in url and _token():
+            cabecalho["Authorization"] = f"Bearer {_token()}"
+        try:
+            pedido = urllib.request.Request(url, headers=cabecalho)
+            with urllib.request.urlopen(pedido, timeout=timeout) as r:
+                return r.read(60_000_000)
+        except urllib.error.HTTPError as exc:
+            erro = exc
+            if exc.code not in (401, 429, 500, 502, 503):
+                raise
+        except Exception as exc:      # rede instavel tambem merece segunda chance
+            erro = exc
+    raise erro
+
+
+def json_de(url: str, timeout: int = 45) -> dict:
+    return json.loads(abrir(url, timeout=timeout))
+
+
+def _humano(exc: Exception) -> str:
+    codigo = getattr(exc, "code", None)
+    if codigo == 401:
+        return ("a Openverse corta quem busca muito sem cadastro (401). Espere alguns minutos, "
+                "use o Wikimedia junto, ou cadastre uma chave gratuita em "
+                "api.openverse.org/v1/auth_tokens/register e ponha em OPENVERSE_TOKEN")
+    if codigo == 429:
+        return "pediram para ir mais devagar (429)"
+    return str(exc)
+
+
 MIN_LADO = 512          # imagem pequena nao ensina estilo, so borra
 
 # "todas" inclui licenca que proibe uso comercial; a escolha e sua e fica registrada
@@ -78,10 +139,9 @@ def _busca_openverse(termo: str, quantidade: int, licenca: str) -> list[dict]:
             params["license"] = LICENCAS[licenca]
         url = "https://api.openverse.org/v1/images/?" + urllib.parse.urlencode(params)
         try:
-            with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=45) as r:
-                dados = json.load(r)
+            dados = json_de(url)
         except Exception as exc:
-            _diz(f"openverse: {exc}")
+            _diz(f"openverse: {_humano(exc)}")
             break
         for item in dados.get("results") or []:
             if min(item.get("width") or 0, item.get("height") or 0) < MIN_LADO:
@@ -106,10 +166,9 @@ def _busca_commons(termo: str, quantidade: int) -> list[dict]:
     }
     url = "https://commons.wikimedia.org/w/api.php?" + urllib.parse.urlencode(params)
     try:
-        with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=45) as r:
-            dados = json.load(r)
+        dados = json_de(url)
     except Exception as exc:
-        _diz(f"commons: {exc}")
+        _diz(f"commons: {_humano(exc)}")
         return []
     achados = []
     for pag in ((dados.get("query") or {}).get("pages") or {}).values():
@@ -165,14 +224,12 @@ def coletar(termo: str, quantidade: int = 24, licenca: str = "livres",
                     ext = ".jpg"
                 alvo = pasta / f"{_job['baixadas'] + 1:03d}{ext}"
                 try:
-                    req = urllib.request.Request(url, headers=UA)
-                    with urllib.request.urlopen(req, timeout=60) as r:
-                        dados = r.read(20_000_000)
+                    dados = abrir(url, timeout=60)
                     if len(dados) < 15_000:
                         continue
                     alvo.write_bytes(dados)
                 except Exception as exc:
-                    _diz(f"pulei {url[:50]}: {exc}")
+                    _diz(f"pulei {url[:50]}: {_humano(exc)}")
                     continue
                 _job["baixadas"] += 1
                 creditos.append({**item, "arquivo": alvo.name})

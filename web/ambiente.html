@@ -14,6 +14,9 @@
       <a href="/preparar.html">Preparar dados</a>
       <a href="/treino.html">Treino</a>
       <a href="/imagens.html">Imagens</a>
+      <a href="/classificador.html">Classificador</a>
+      <a href="/som.html">Som</a>
+      <a href="/tresd.html">3D</a>
       <a href="/exportar.html">Exportar</a>
       <a href="/ambiente.html">Ambiente</a>
     </nav>
@@ -28,23 +31,6 @@
       <h2>Estado da conexão <span class="sub">(atualiza sozinho)</span></h2>
       <p id="resumo" class="note">verificando…</p>
       <ul id="itens" class="runs"></ul>
-    </section>
-
-    <section class="card">
-      <h2>Treinos disponíveis <span class="sub">(cada um instala só o que precisa)</span></h2>
-      <p id="capNota" class="note"></p>
-      <ul id="capacidades" class="runs"></ul>
-      <div id="instalaLog"></div>
-    </section>
-
-    <section class="card">
-      <h2>Modelos <span class="sub">(o que cabe nesta máquina)</span></h2>
-      <p class="note">“treina na memória” = LoRA sem placa de vídeo; é mais lento, mas funciona. Os outros precisam de GPU para treinar.</p>
-      <ul id="modelos" class="runs"></ul>
-      <div class="controls">
-        <button id="limpar" type="button">Limpar pesos órfãos do cache</button>
-        <span id="limpaNota" class="note"></span>
-      </div>
     </section>
 
     <section class="card">
@@ -70,6 +56,8 @@
         <label class="sub"><input id="enviar_projeto" type="checkbox" /> enviar o código do projeto (só SSH)</label>
         <label class="sub">Sistema <select id="sistema"><option value="">detectar sozinho</option></select></label>
       </div>
+      <p class="note">Treinos para instalar junto (cada um baixa só os pacotes dele; sem marcar nenhum, só o básico vai):</p>
+      <div id="treinosInstalar" class="grid2"></div>
       <p class="note">Sem compilador C o torch quebra na primeira passada de treino — por isso ele entra no básico. O Docker e a página já vieram pelo <code>instalar.sh</code>.</p>
       <div class="controls">
         <button id="verBtn" type="button">Ver o script</button>
@@ -77,6 +65,24 @@
         <button id="goBtn" type="button">Instalar no servidor (SSH)</button>
         <span id="spin" class="spin" aria-hidden="true"></span>
         <span id="nota" class="note"></span>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Treinos disponíveis <span class="sub">(cada um instala só o que precisa)</span></h2>
+      <p class="note">“Instalar aqui” instala nesta máquina. Para instalar em <strong>outro servidor</strong>, marque o treino em <em>O que instalar</em>, acima, e use <em>Instalar no servidor (SSH)</em>.</p>
+      <p id="capNota" class="note"></p>
+      <ul id="capacidades" class="runs"></ul>
+      <div id="instalaLog"></div>
+    </section>
+
+    <section class="card">
+      <h2>Modelos <span class="sub">(o que cabe nesta máquina)</span></h2>
+      <p class="note">“treina na memória” = LoRA sem placa de vídeo; é mais lento, mas funciona. Os outros precisam de GPU para treinar.</p>
+      <ul id="modelos" class="runs"></ul>
+      <div class="controls">
+        <button id="limpar" type="button">Limpar pesos órfãos do cache</button>
+        <span id="limpaNota" class="note"></span>
       </div>
     </section>
 
@@ -109,6 +115,7 @@
         destino_dir: v("destino_dir"), sistema: v("sistema"), senha: v("senha"),
         basico: c("basico"), ollama: c("ollama"), modelo: c("modelo"),
         treino: c("treino"), enviar_projeto: !local && c("enviar_projeto"),
+        treinos: Array.from(document.querySelectorAll(".treinoCx:checked")).map((x) => x.value),
         executar,
       };
     }
@@ -277,7 +284,7 @@
         if (i.instalavel) {
           const b = document.createElement("button");
           b.className = "small primary"; b.type = "button";
-          b.textContent = "Instalar";
+          b.textContent = "Instalar aqui";
           b.disabled = inst.state === "running";
           b.onclick = async () => {
             const r = await api("/api/instalar-capacidade", { id: i.id });
@@ -295,6 +302,19 @@
         li.appendChild(acoes);
         ul.appendChild(li);
       });
+      const caixas = document.getElementById("treinosInstalar");
+      if (caixas && !caixas.dataset.pronto) {
+        caixas.dataset.pronto = "1";
+        j.itens.filter((i) => i.tem_pacote).forEach((i) => {
+          const lab = document.createElement("label");
+          lab.className = "sub";
+          const cx = document.createElement("input");
+          cx.type = "checkbox"; cx.value = i.id; cx.className = "treinoCx";
+          lab.append(cx, document.createTextNode(" " + i.nome));
+          caixas.appendChild(lab);
+        });
+      }
+
       const box = document.getElementById("instalaLog");
       box.innerHTML = "";
       (inst.linhas || []).slice(-6).forEach((l) => appendLine("instalaLog", l,

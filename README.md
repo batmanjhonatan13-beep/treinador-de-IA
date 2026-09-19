@@ -38,7 +38,7 @@ na pasta do usuário. O `./docker/subir-docker.sh` procura um que responda e diz
 página **Ambiente** mostra o mesmo, escrito. Com o Desktop funcionando, o rootless vira
 sobra: `pkill -f dockerd-rootless` e `rm -rf ~/.local/bin/docker*` limpam.
 
-## As sete páginas
+## As dez páginas
 
 | Página | O que faz |
 |---|---|
@@ -47,6 +47,9 @@ sobra: `pkill -f dockerd-rootless` e `rm -rf ~/.local/bin/docker*` limpam.
 | **Preparar dados** | Cola texto **ou extrai um site de documentação inteiro** e já devolve os fatos prontos. |
 | **Treino** | Treina um arquivo (ou vários juntos), prova sem consulta e repete até consolidar. |
 | **Imagens** | Junta imagens com licença declarada e treina um **LoRA de estilo** no Stable Diffusion. |
+| **Classificador** | Separa categorias suas em imagens, com prova em imagens que ele nunca viu. |
+| **Som** | Junta áudio com licença, **classifica som** (com prova), **gera som** e ensina um estilo ao gerador. |
+| **3D** | Texto ou foto → malha `.glb`, e referências CC0 do Poly Haven. |
 | **Exportar** | Empacota conhecimento consolidado + instalador do sistema escolhido. |
 | **Ambiente** | Estado da conexão, **catálogo de treinos com instalação sob demanda**, modelos e instalação por SSH. |
 
@@ -126,6 +129,26 @@ Usa o Chrome sem janela, então pega página montada por JavaScript; descreve as
 `learn.vision_model`; e, com "seguir links para outras docs", entra também nas páginas de
 outras ferramentas que a doc cita — um nível, sem sair rastejando a web.
 
+### Quando o site corta o acesso
+
+Andar página a página por uma documentação grande faz o servidor barrar: ele passa a
+devolver a tela de **“Um momento…”** (verificação de robô) com HTTP 200, e um extrator
+ingênuo conta aquilo como página lida. Aconteceu aqui com a doc da Godot: **2 273 páginas
+lidas, 114 aproveitadas** — o resto era a mesma tela de verificação.
+
+Agora o extrator reconhece essa tela, **não conta como página lida**, e para depois de três
+seguidas dizendo o que fazer. O mesmo vale para o `429` (“vá mais devagar”).
+
+O caminho certo para doc grande é o pacote que o próprio site publica:
+
+```
+https://docs.exemplo.org/_/downloads/<idioma>/<versão>/htmlzip/
+```
+
+O botão **Importar documentação (.zip)** baixa isso uma vez só (ou lê um `.zip` do seu
+disco), lista as páginas igual a uma busca, e você marca o que quer. Um download em vez de
+mil requisições — e nada de verificação de robô.
+
 ### Filtros de endereço
 
 O endereço é que diz o assunto, então é por ele que se filtra:
@@ -166,7 +189,10 @@ Nada é instalado sem você pedir — cada treino tem seu botão de instalar.
 | Personagem ou objeto | ✅ mesma base, legenda com gatilho | você aprova |
 | Estilo em SDXL | ✅ pesado: 30 passos ≈ 5 min | você aprova |
 | Classificador de imagem | ✅ segundos | acerto em imagens nunca vistas — automática |
-| Imagem → 3D | 🕓 falta compilador C (`torchmcubes`) | — |
+| Classificador de som | ✅ segundos, roda sem GPU | acerto em faixas nunca ouvidas — automática |
+| Gerar som e música (MusicGen) | ✅ 5 s de áudio em ~40 s | você ouve e aprova |
+| Estilo de som (LoRA no MusicGen) | ✅ precisa de ~20 faixas para valer | você ouve e aprova |
+| Texto ou foto → 3D (Shap-E) | ✅ 11 s por malha, sai `.glb`/`.obj` | você olha e aprova |
 | Fotos → 3D (Gaussian Splatting) | 🕓 falta COLMAP (precisa de root) | — |
 | Clonar voz | 🕓 não implementado; cuidado com a licença | — |
 | Treinar vídeo | ✕ cluster, não PC | — |
@@ -178,7 +204,34 @@ olhando o que saiu — e a sua decisão fica gravada com data. Inventar um núme
 mentira; deixar tudo "talvez" seria inútil.
 
 Só o que está consolidado aparece no **Exportar**, e cada tipo sai com o seu próprio README
-de uso (LoRA para Automatic1111/ComfyUI, classificador com o código de carregar).
+de uso (LoRA para Automatic1111/ComfyUI, classificador com o código de carregar, malha 3D
+pronta para o Blender).
+
+### Duas coisas que não são treino, e está escrito na tela
+
+**3D não se treina em casa.** O que a página 3D faz é rodar o Shap-E (OpenAI, Apache-2.0),
+que já vem no `diffusers`. Escolhi ele e não o TripoSR — que gera malha melhor — porque o
+TripoSR compila código CUDA na instalação (`torchmcubes`) e quebra em máquina sem compilador
+C: um cliente seu não conseguiria instalar. O que dá para treinar é o lado da **imagem**: um
+LoRA faz o seu objeto sair sempre igual, e essa imagem vira malha.
+
+**Gerar som também é modelo pronto** (MusicGen, da Meta). O que se treina ali é um LoRA por
+cima dele. Repare na licença: o MusicGen é **CC-BY-NC** — serve para uso interno, mas o áudio
+gerado não pode ser vendido. Para uma ferramenta que vai ser vendida, a licença do modelo
+pesa tanto quanto a qualidade.
+
+### De onde vem o material
+
+| Fonte | O que traz | Licença |
+|---|---|---|
+| Openverse | imagens e **áudio** (indexa o Freesound) | filtro por licença na busca |
+| Wikimedia Commons | imagens e áudio | declarada em cada arquivo |
+| Poly Haven | modelos 3D | tudo CC0 |
+
+Cada download grava autor, licença e endereço em `creditos.json`. **Spotify, YouTube, Deezer
+e Google Imagens ficam de fora de propósito**: os termos de uso deles proíbem baixar e usar
+para treino, e o arquivo baixado não diz quem é o dono. Isso não muda por a ferramenta rodar
+na sua máquina — muda quando você for vender o que saiu dela.
 
 ## Testar no chat
 
@@ -218,6 +271,8 @@ RHEL/Rocky/Alma/Fedora, **SUSE/openSUSE**, Arch, Alpine, macOS e Windows (winget
 
 - **Instalar aqui** ou **no servidor (SSH)**. Por SSH é preciso chave (sem senha interativa);
   dá para enviar o código do projeto junto.
+- Em *O que instalar* dá para marcar **quais treinos** vão junto (imagem, som, 3D…). O script
+  leva os nomes dos pacotes no corpo, então funciona mesmo em servidor que não tem o projeto.
 - **Senha de administrador**: quando a máquina exige sudo, o campo é obrigatório — sem ele a
   instalação nem começa. A senha vai pela entrada do shell (não fica em arquivo nem na lista
   de processos) e não aparece no script nem no log.
@@ -229,6 +284,27 @@ RHEL/Rocky/Alma/Fedora, **SUSE/openSUSE**, Arch, Alpine, macOS e Windows (winget
 - Depois, "Usar o Ollama desse servidor" aponta o chat para a máquina preparada.
 
 ## Exportar
+
+### Vários conhecimentos num pacote só
+
+Marque tudo que vai para a mesma máquina — a doc que virou peso, o estilo de imagem, o som,
+o classificador — e sai **uma pasta** assim:
+
+```
+pacote/
+  README.md          o que tem dentro e em cima de que modelo cada peça roda
+  instalar.sh        prepara tudo de uma vez, no sistema que você escolheu
+  texto/<nome>/      adaptador + run.py
+  imagem/<nome>/     LoRA .safetensors
+  som-estilo/<nome>/ LoRA + usar.py que gera áudio
+  som-classificador/<nome>/  modelo.pt + usar.py que roda sozinho
+  3d/<nome>/         .glb, .obj, .ply e a prévia
+```
+
+**Isto não é fusão.** Dois conhecimentos de *texto* no mesmo pacote continuam carregando um
+de cada vez: juntar adaptadores já treinados foi medido aqui e piora o resultado (16/21 caiu
+para 8/21). Para os dois assuntos numa resposta só, treine os arquivos **juntos** na página
+Treino. O README do pacote diz isso a quem receber, para ninguém tentar de novo.
 
 O pacote leva os pesos, um `run.py`, o README e o instalador com os pacotes certos do
 sistema escolhido. No destino é um comando:
