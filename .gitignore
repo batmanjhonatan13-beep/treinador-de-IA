@@ -19,3 +19,10 @@ data/classes/
 data/classificadores/
 data/geradas/
 data/aprovacoes.json
+
+# pacotes de documentacao baixados para importar (ficam na sua maquina)
+*.zip
+*.tgz
+*.tar.gz
+*.tar.bz2
+*.docset

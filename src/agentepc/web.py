@@ -135,6 +135,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/imagens":
             self._json(200, {"coleta": coletor.status(), "treino": imagem.status()})
             return
+        if path == "/api/doc-atualizar-job":
+            self._json(200, catalogo_docs.status_atualizacao())
+            return
         if path == "/api/doc-catalogo":
             self._json(200, catalogo_docs.resumo())
             return
@@ -306,6 +309,9 @@ class Handler(BaseHTTPRequestHandler):
                     int(b.get("pages") or 0), b.get("incluir") or "", b.get("excluir") or "",
                     bool(b.get("so_abaixo", True)), b.get("assunto") or "",
                 ))
+                return
+            if path == "/api/doc-atualizar":
+                self._json(200, catalogo_docs.atualizar())
                 return
             if path == "/api/crawl-zip":
                 b = self._read_json()

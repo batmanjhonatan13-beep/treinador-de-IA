@@ -19,6 +19,14 @@ licenca que vale, nao a do pacote.
 
 from __future__ import annotations
 
+import json
+import re
+import threading
+import urllib.request
+from datetime import datetime, timezone
+
+UA = {"User-Agent": "agente-pc/1.0 (catalogo de documentacao)"}
+
 
 def _dash(nome: str) -> str:
     return f"https://kapeli.com/feeds/{nome}.tgz"
@@ -196,10 +204,187 @@ CATALOGO: list[dict] = [
 ]
 
 
+# ------------------------------------------------------------------ atualizacao
+# Versao envelhece: quando escrevi esta lista o Git estava na 2.47 e uma hora depois ja
+# era 2.55. Em vez de voce conferir um por um, cada fonte sabe descobrir a propria versao.
+DASH_XML = "https://kapeli.com/feeds/{}.xml"
+DASH_COM_INDEX = "https://kapeli.com/feeds/zzz/user_contributed/build/index.json"
+
+_atualizacao: dict = {"state": "idle", "linhas": [], "quando": "", "mudou": 0}
+
+
+def _busca(url: str, timeout: int = 25) -> str:
+    pedido = urllib.request.Request(url, headers=UA)
+    with urllib.request.urlopen(pedido, timeout=timeout) as r:
+        return r.read(8_000_000).decode("utf-8", "replace")
+
+
+def _cache() -> Path:
+    from agentepc.config import resolve
+
+    return resolve("data/catalogo-versoes.json")
+
+
+def versoes() -> dict:
+    arq = _cache()
+    if arq.exists():
+        try:
+            return json.loads(arq.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+    return {}
+
+
+def _fonte(item: dict) -> str:
+    """Descobre sozinho de onde veio o pacote, pelo proprio endereco."""
+    pacote = item.get("pacote") or ""
+    if "user_contributed" in pacote:
+        return "dash_com"
+    if "kapeli.com/feeds/" in pacote:
+        return "dash"
+    if "docs.python.org" in pacote:
+        return "python"
+    if "djangoproject.com" in pacote:
+        return "django"
+    if "scm/git/" in pacote:
+        return "git"
+    return ""
+
+
+def _limpa_versao(bruta: str) -> str:
+    """Nem todo feed traz versao de verdade.
+
+    Alguns conjuntos do Dash publicam numero de build no lugar ("/9", "/157"), e outros
+    grudam um hash atras da versao ("1.1.2/001-6cba3c5c"). Mostrar isso ao usuario e pior
+    do que nao mostrar nada: parece versao e nao e.
+    """
+    versao = (bruta or "").strip().lstrip("/").split("/")[0].strip()
+    if not versao or re.fullmatch(r"\d{1,3}", versao):
+        return ""
+    return versao[:24]
+
+
+def _versao_dash(item: dict) -> tuple[str, str]:
+    nome = (item["pacote"].rsplit("/", 1)[-1]).replace(".tgz", "")
+    xml = _busca(DASH_XML.format(nome))
+    achado = re.search(r"<version>([^<]+)</version>", xml)
+    return _limpa_versao(achado.group(1) if achado else ""), item["pacote"]
+
+
+def _versao_dash_com(item: dict, indice: dict) -> tuple[str, str]:
+    nome = (item["pacote"].rsplit("/", 1)[-1]).replace(".tgz", "")
+    dados = (indice.get("docsets") or indice).get(nome) or {}
+    return _limpa_versao(str(dados.get("version") or "")), item["pacote"]
+
+
+def _versao_python(item: dict) -> tuple[str, str]:
+    pagina = _busca("https://docs.python.org/pt-br/3/download.html")
+    achado = re.search(r"archives/python-([0-9.]+)-docs-html\.zip", pagina)
+    if not achado:
+        return "", item["pacote"]
+    versao = achado.group(1)
+    base = "pt-br/3" if "pt-br" in item["pacote"] else "3"
+    return versao, f"https://docs.python.org/{base}/archives/python-{versao}-docs-html.zip"
+
+
+def _versao_django(item: dict) -> tuple[str, str]:
+    dados = json.loads(_busca("https://pypi.org/pypi/Django/json"))
+    cheia = dados["info"]["version"]
+    curta = ".".join(cheia.split(".")[:2])
+    return curta, f"https://media.djangoproject.com/docs/django-docs-{curta}-en.zip"
+
+
+def _versao_git(item: dict) -> tuple[str, str]:
+    pagina = _busca("https://mirrors.edge.kernel.org/pub/software/scm/git/")
+    achados = re.findall(r"git-htmldocs-([0-9][0-9.]*)\.tar\.gz", pagina)
+    if not achados:
+        return "", item["pacote"]
+    versao = sorted(achados, key=lambda v: [int(x) for x in v.strip(".").split(".")])[-1]
+    return versao, ("https://mirrors.edge.kernel.org/pub/software/scm/git/"
+                    f"git-htmldocs-{versao}.tar.gz")
+
+
+def status_atualizacao() -> dict:
+    return {**_atualizacao, "quando": versoes().get("_quando", "")}
+
+
+def atualizar() -> dict:
+    """Confere a versao de cada pacote e guarda o que mudou.
+
+    Roda em segundo plano porque sao dezenas de pedidos. O que falhar fica com o valor
+    antigo — um pacote fora do ar nao pode derrubar a lista inteira.
+    """
+    if _atualizacao["state"] == "running":
+        return {"accepted": False, "reason": "ja tem uma atualizacao rodando"}
+    _atualizacao.update({"state": "running", "linhas": [], "mudou": 0})
+
+    def _diz(msg: str) -> None:
+        _atualizacao["linhas"].append(msg)
+        del _atualizacao["linhas"][:-40]
+
+    def _go() -> None:
+        try:
+            achado = versoes()
+            achado.pop("_quando", None)
+            indice = {}
+            if any(_fonte(i) == "dash_com" for i in CATALOGO):
+                try:
+                    indice = json.loads(_busca(DASH_COM_INDEX, timeout=60))
+                except Exception as exc:
+                    _diz(f"indice da comunidade indisponivel: {exc}")
+            mudou = 0
+            for item in CATALOGO:
+                fonte = _fonte(item)
+                if not fonte:
+                    continue
+                try:
+                    if fonte == "dash":
+                        versao, pacote = _versao_dash(item)
+                    elif fonte == "dash_com":
+                        versao, pacote = _versao_dash_com(item, indice)
+                    elif fonte == "python":
+                        versao, pacote = _versao_python(item)
+                    elif fonte == "django":
+                        versao, pacote = _versao_django(item)
+                    else:
+                        versao, pacote = _versao_git(item)
+                except Exception as exc:
+                    _diz(f"{item['nome']}: nao consegui conferir ({exc})")
+                    continue
+                if not versao:
+                    # sem versao confiavel agora: apaga o que estava guardado, senao um
+                    # valor velho e errado ("/9") fica na tela para sempre
+                    achado.pop(item["id"], None)
+                    continue
+                antes = (achado.get(item["id"]) or {}).get("versao") or item.get("versao") or ""
+                achado[item["id"]] = {"versao": versao, "pacote": pacote}
+                if versao != antes:
+                    mudou += 1
+                    _diz(f"{item['nome']}: {antes or '?'} -> {versao}")
+            achado["_quando"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            _cache().write_text(json.dumps(achado, ensure_ascii=False, indent=1), encoding="utf-8")
+            _atualizacao.update({"state": "done", "mudou": mudou})
+            _diz(f"pronto: {mudou} versao(oes) mudaram" if mudou else "pronto: tudo ja estava atual")
+        except Exception as exc:
+            _atualizacao["state"] = "error"
+            _diz(f"erro: {exc}")
+
+    threading.Thread(target=_go, name="catalogo-versoes", daemon=True).start()
+    return {"accepted": True}
+
+
 def listar(categoria: str = "") -> list[dict]:
+    novas = versoes()
     itens = [i for i in CATALOGO if not categoria or i["categoria"] == categoria]
-    return [{**i, "tem_pacote": bool(i["pacote"]),
-             "categoria_nome": CATEGORIAS.get(i["categoria"], i["categoria"])} for i in itens]
+    saida = []
+    for item in itens:
+        atual = novas.get(item["id"]) or {}
+        saida.append({**item,
+                      "versao": atual.get("versao") or item.get("versao", ""),
+                      "pacote": atual.get("pacote") or item["pacote"],
+                      "tem_pacote": bool(atual.get("pacote") or item["pacote"]),
+                      "categoria_nome": CATEGORIAS.get(item["categoria"], item["categoria"])})
+    return saida
 
 
 def por_id(item_id: str) -> dict | None:
@@ -207,5 +392,8 @@ def por_id(item_id: str) -> dict | None:
 
 
 def resumo() -> dict:
-    return {"categorias": CATEGORIAS, "itens": listar(),
-            "com_pacote": sum(1 for i in CATALOGO if i["pacote"]), "total": len(CATALOGO)}
+    itens = listar()
+    return {"categorias": CATEGORIAS, "itens": itens,
+            "com_pacote": sum(1 for i in itens if i["tem_pacote"]), "total": len(itens),
+            "atualizado_em": versoes().get("_quando", ""),
+            "atualizacao": {k: v for k, v in _atualizacao.items() if k != "linhas"}}

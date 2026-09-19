@@ -34,38 +34,93 @@
     </section>
 
     <section class="card">
-      <h2>1a. Puxar de um site (opcional)</h2>
-      <p class="note">Informe a raiz: o programa anda a árvore, lista cada página pelo nome e você marca o que quer extrair. Blocos de código, imagens e links para a doc de outras ferramentas entram junto. Pode parar quando quiser.</p>
-      <div class="grid2">
-        <input id="url" type="text" placeholder="https://docs.python.org/pt-br/3/" />
-        <input id="subject2" type="text" placeholder="Assunto — vira o nome do lote (ex.: Python 3.14)" />
+      <h2>1. De onde vêm os dados</h2>
+      <div class="controls abas" id="abasFonte">
+        <button type="button" class="primary" data-aba="catalogo">Catálogo de docs</button>
+        <button type="button" data-aba="pacote">Pacote (.zip)</button>
+        <button type="button" data-aba="site">Site</button>
+        <button type="button" data-aba="confluence">Confluence</button>
+        <button type="button" data-aba="texto">Colar texto</button>
       </div>
-      <div class="grid2">
-        <input id="incluir" type="text" placeholder="só endereços contendo… (ex.: /spaces/TIME/)" />
-        <input id="excluir" type="text" placeholder="pular endereços contendo… (ex.: /blog/, /es/)" />
+
+      <div class="pane" id="paneCatalogo">
+        <p class="note">Lista pronta, com o endereço já conferido. <strong>📦</strong> baixa a doc inteira de uma vez; <strong>🌐</strong> preenche o endereço para a varredura.</p>
+        <div class="grid2">
+          <label class="sub">Categoria <select id="docCat"><option value="">todas</option></select></label>
+          <input id="docBusca" type="text" placeholder="filtrar pelo nome (ex.: docker, blender)" />
+        </div>
+        <div class="controls">
+          <button id="docAtualizar" type="button">Atualizar versões</button>
+          <span id="docSpin" class="spin" aria-hidden="true"></span>
+          <span id="docQuando" class="note"></span>
+        </div>
+        <ul id="docCatalogo" class="runs"></ul>
+        <p class="note" id="docNota"></p>
       </div>
-      <div class="grid2">
-        <label class="sub"><input id="so_abaixo" type="checkbox" checked /> só abaixo do endereço raiz (segura a versão: <code>/pt-br/3/</code> não pega a 3.13)</label>
-        <label class="sub"><input id="browser" type="checkbox" checked /> usar navegador (pega JavaScript)</label>
-        <label class="sub"><input id="imgs" type="checkbox" checked /> ler as imagens (modelo de visão)</label>
-        <label class="sub"><input id="externos" type="checkbox" /> seguir links para outras docs (1 nível)</label>
-        <label class="sub">Teto de páginas (0 = sem teto) <input id="pages" type="number" value="0" min="0" /></label>
+
+      <div class="pane hidden-block" id="panePacote">
+        <p class="note">Um download e acabou: sem varredura, sem o site cortar o acesso. Aceita <code>.zip</code>, <code>.tar.gz</code> ou uma pasta aqui da máquina.</p>
+        <div class="grid2">
+          <input id="zipUrl" type="text" placeholder="endereço do pacote — ou caminho de um arquivo/pasta aqui" />
+          <input id="subject2" type="text" placeholder="Assunto — vira o nome do lote (ex.: Python 3.14)" />
+        </div>
+        <div class="controls">
+          <button id="zipBtn" class="primary" type="button">Importar pacote</button>
+        </div>
       </div>
-      <p class="note"><strong>Doc grande?</strong> Andar pelo site página a página faz o servidor cortar o acesso: ele passa a devolver a tela de “Um momento…” em vez do conteúdo, e o extrator para e avisa. Quase toda documentação tem um pacote pronto — um download só, conteúdo completo, sem incomodar o site. Onde procurar:</p>
-<div class="grid2">
-        <label class="sub">Categoria <select id="docCat"><option value="">todas</option></select></label>
-        <input id="docBusca" type="text" placeholder="filtrar pelo nome (ex.: docker, blender)" />
+
+      <div class="pane hidden-block" id="paneSite">
+        <p class="note">Para doc sem pacote pronto. O programa anda a árvore, lista cada página e você marca o que quer. Pode parar quando quiser.</p>
+        <div class="grid2">
+          <input id="url" type="text" placeholder="https://docs.exemplo.org/pt-br/3/" />
+          <input id="incluir" type="text" placeholder="só endereços contendo… (opcional)" />
+        </div>
+        <div class="grid2">
+          <input id="excluir" type="text" placeholder="pular endereços contendo… (opcional)" />
+          <label class="sub">Teto de páginas (0 = sem teto) <input id="pages" type="number" value="0" min="0" /></label>
+        </div>
+        <details>
+          <summary class="sub">Opções</summary>
+          <div class="grid2">
+            <label class="sub"><input id="so_abaixo" type="checkbox" checked /> só abaixo do endereço raiz (segura a versão)</label>
+            <label class="sub"><input id="browser" type="checkbox" checked /> usar navegador (pega JavaScript)</label>
+            <label class="sub"><input id="imgs" type="checkbox" checked /> ler as imagens (modelo de visão)</label>
+            <label class="sub"><input id="externos" type="checkbox" /> seguir links para outras docs (1 nível)</label>
+          </div>
+        </details>
+        <div class="controls">
+          <button id="crawlBtn" class="primary" type="button">Procurar páginas</button>
+          <button id="crawlStop" class="danger" type="button" disabled>Parar</button>
+          <button id="crawlClear" type="button">Limpar busca</button>
+        </div>
       </div>
-      <ul id="docCatalogo" class="runs"></ul>
-      <p class="note" id="docNota"></p>
-      <div class="grid2">
-        <input id="zipUrl" type="text" placeholder="endereço do pacote (.zip ou .tar.gz) — ou o caminho de um arquivo/pasta aqui na máquina" />
-        <button id="zipBtn" type="button">Importar documentação (.zip / .tar.gz / pasta)</button>
+
+      <div class="pane hidden-block" id="paneConfluence">
+        <p class="note">Cole o endereço de qualquer página do espaço. O filtro do espaço é montado sozinho, para não trazer o Confluence inteiro.</p>
+        <div class="grid2">
+          <input id="confUrl" type="text" placeholder="https://empresa.atlassian.net/wiki/spaces/TIME/overview" />
+          <input id="confEspaco" type="text" placeholder="chave do espaço (deixe vazio: eu descubro)" />
+        </div>
+        <div class="controls">
+          <button id="confBtn" class="primary" type="button">Procurar páginas do espaço</button>
+          <span id="confNota" class="note"></span>
+        </div>
+        <p class="note"><strong>Espaço privado?</strong> A varredura entra sem login e só vai ver a tela de entrada. Nesse caso use <em>Espaço → Exportar → HTML</em> no próprio Confluence: sai um <code>.zip</code> que a aba <strong>Pacote</strong> importa inteiro.</p>
       </div>
+
+      <div class="pane hidden-block" id="paneTexto">
+        <p class="note" id="srcNote">Cole qualquer texto: anotação, conversa, lista. O modelo local reescreve no formato do treino e você confere.</p>
+        <input id="subject" type="text" placeholder="Sobre quem/o quê são os dados?" />
+        <textarea id="raw" class="big" placeholder="Cole aqui qualquer texto. Até 60 mil caracteres."></textarea>
+        <div class="controls">
+          <button id="fmtBtn" class="primary" type="button">Formatar para treino</button>
+          <span id="spin" class="spin" aria-hidden="true"></span>
+          <span id="fmtNote" class="note"></span>
+        </div>
+        <div id="fmtBar" class="bar"><span></span></div>
+      </div>
+
       <div class="controls">
-        <button id="crawlBtn" type="button">Procurar páginas</button>
-        <button id="crawlStop" class="danger" type="button" disabled>Parar</button>
-        <button id="crawlClear" type="button">Limpar busca</button>
         <span id="crawlSpin" class="spin" aria-hidden="true"></span>
         <span id="crawlNote" class="note"></span>
       </div>
@@ -81,19 +136,6 @@
         </div>
         <ul id="listaPag" class="runs"></ul>
       </div>
-    </section>
-
-    <section class="card">
-      <h2>1b. Colar dados à mão <span class="sub">(só se você não extraiu um site)</span></h2>
-      <p class="note" id="srcNote"></p>
-      <input id="subject" type="text" placeholder="Sobre quem/o quê são os dados? (ex.: Jhonatan, o jogo A Vingança da Ira)" />
-      <textarea id="raw" class="big" placeholder="Cole aqui qualquer texto. Até 60 mil caracteres."></textarea>
-      <div class="controls">
-        <button id="fmtBtn" class="primary" type="button">Formatar para treino</button>
-        <span id="spin" class="spin" aria-hidden="true"></span>
-        <span id="fmtNote" class="note"></span>
-      </div>
-      <div id="fmtBar" class="bar"><span></span></div>
     </section>
 
     <section class="card">
@@ -283,6 +325,40 @@
       if (!crawlPoll) crawlPoll = setInterval(() => watchCrawl().catch(() => {}), 2000);
       watchCrawl();
     };
+    // ---- abas: uma tarefa por tela, em vez de tudo junto
+    function aba(qual) {
+      document.querySelectorAll("#abasFonte button").forEach((b) =>
+        b.className = b.dataset.aba === qual ? "primary" : "");
+      ["catalogo", "pacote", "site", "confluence", "texto"].forEach((nome) => {
+        const el = document.getElementById("pane" + nome[0].toUpperCase() + nome.slice(1));
+        if (el) el.classList.toggle("hidden-block", nome !== qual);
+      });
+      localStorage.setItem("abaFonte", qual);
+    }
+    document.querySelectorAll("#abasFonte button").forEach((b) =>
+      b.onclick = () => aba(b.dataset.aba));
+    aba(localStorage.getItem("abaFonte") || "catalogo");
+
+    // ---- Confluence: monta o filtro do espaco sozinho
+    document.getElementById("confBtn").onclick = async () => {
+      const endereco = document.getElementById("confUrl").value.trim();
+      const nota = document.getElementById("confNota");
+      if (!endereco) { nota.textContent = "cole o endereço de uma página do espaço"; return; }
+      let chave = document.getElementById("confEspaco").value.trim();
+      if (!chave) {
+        const achado = endereco.match(/\/(?:spaces|display)\/([^\/?#]+)/i);
+        chave = achado ? achado[1] : "";
+      }
+      if (!chave) { nota.textContent = "não achei a chave do espaço no endereço; preencha ao lado"; return; }
+      document.getElementById("url").value = endereco;
+      document.getElementById("incluir").value = "/spaces/" + chave + "/, /display/" + chave + "/";
+      document.getElementById("so_abaixo").checked = false;
+      document.getElementById("browser").checked = true;
+      document.getElementById("subject2").value = "Confluence " + chave;
+      nota.textContent = "espaço " + chave + ": procurando…";
+      document.getElementById("crawlBtn").click();
+    };
+
     let catalogo = [];
 
     function pintaCatalogo() {
@@ -329,6 +405,10 @@
 
     api("/api/doc-catalogo").then((j) => {
       catalogo = j.itens || [];
+      if (j.atualizado_em) {
+        document.getElementById("docQuando").textContent =
+          "versões conferidas em " + fmtTime(j.atualizado_em, true);
+      }
       const sel = document.getElementById("docCat");
       Object.entries(j.categorias || {}).forEach(([id, nome]) => {
         const o = document.createElement("option");
@@ -339,6 +419,25 @@
     }).catch(() => {
       document.getElementById("docNota").textContent = "catálogo indisponível (reinicie a página do servidor)";
     });
+    document.getElementById("docAtualizar").onclick = async () => {
+      const spin = document.getElementById("docSpin");
+      const r = await api("/api/doc-atualizar", {});
+      if (!r.accepted) { document.getElementById("docQuando").textContent = r.reason; return; }
+      spin.classList.add("on");
+      const relogio = setInterval(async () => {
+        const j = await api("/api/doc-atualizar-job");
+        document.getElementById("docQuando").textContent = (j.linhas || []).slice(-1)[0] || "conferindo…";
+        if (j.state === "running") return;
+        clearInterval(relogio);
+        spin.classList.remove("on");
+        const novo = await api("/api/doc-catalogo");
+        catalogo = novo.itens || [];
+        pintaCatalogo();
+        document.getElementById("docQuando").textContent =
+          (j.mudou ? j.mudou + " versão(ões) mudaram · " : "tudo já estava atual · ") +
+          "conferido agora";
+      }, 2000);
+    };
     document.getElementById("docCat").onchange = pintaCatalogo;
     document.getElementById("docBusca").oninput = pintaCatalogo;
 
