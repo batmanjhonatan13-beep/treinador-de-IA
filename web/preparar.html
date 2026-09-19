@@ -51,10 +51,15 @@
         <label class="sub"><input id="externos" type="checkbox" /> seguir links para outras docs (1 nível)</label>
         <label class="sub">Teto de páginas (0 = sem teto) <input id="pages" type="number" value="0" min="0" /></label>
       </div>
-      <p class="note"><strong>Doc grande?</strong> Andar pelo site página a página faz o servidor cortar o acesso: ele passa a devolver a tela de “Um momento…” em vez do conteúdo, e o extrator para e avisa. Quase toda documentação publica o pacote pronto — no Read the Docs é <code>.../_/downloads/&lt;idioma&gt;/&lt;versão&gt;/htmlzip/</code>. Um download só, conteúdo completo, sem incomodar o site.</p>
+      <p class="note"><strong>Doc grande?</strong> Andar pelo site página a página faz o servidor cortar o acesso: ele passa a devolver a tela de “Um momento…” em vez do conteúdo, e o extrator para e avisa. Quase toda documentação tem um pacote pronto — um download só, conteúdo completo, sem incomodar o site. Onde procurar:</p>
+      <ul class="runs">
+        <li><div><div><strong>No próprio site</strong> — Python (<code>docs.python.org/3/download.html</code>) e Django publicam <code>.zip</code> da doc inteira.</div></div></li>
+        <li><div><div><strong>Read the Docs</strong> — <code>https://PROJETO.readthedocs.io/_/downloads/&lt;idioma&gt;/&lt;versão&gt;/htmlzip/</code></div><div class="note">A versão e o idioma têm que existir: <code>en/stable</code> costuma funcionar, <code>en/latest</code> nem sempre.</div></div></li>
+        <li><div><div><strong>Quem não publica nada</strong> (Docker, Ansible, PostgreSQL…) — os conjuntos do Dash: <code>https://kapeli.com/feeds/&lt;Nome&gt;.tgz</code></div><div class="note">O do Docker tem 196 MB e 1 658 páginas HTML dentro. É a doc completa, offline.</div></div></li>
+      </ul>
       <div class="grid2">
-        <input id="zipUrl" type="text" placeholder="https://docs.exemplo.org/_/downloads/pt-br/latest/htmlzip/ — ou o caminho de um .zip aqui na máquina" />
-        <button id="zipBtn" type="button">Importar documentação (.zip)</button>
+        <input id="zipUrl" type="text" placeholder="endereço do pacote (.zip ou .tar.gz) — ou o caminho de um arquivo/pasta aqui na máquina" />
+        <button id="zipBtn" type="button">Importar documentação (.zip / .tar.gz / pasta)</button>
       </div>
       <div class="controls">
         <button id="crawlBtn" type="button">Procurar páginas</button>

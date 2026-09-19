@@ -442,18 +442,67 @@ def descobrir(url: str, browser: bool = True, externos: bool = False, max_pages:
 
 
 
+IGNORAR_NOMES = {"search.html", "genindex.html", "py-modindex.html", "404.html"}
+IGNORAR_PASTAS = ("/_static/", "/_sources/", "/_images/", "/node_modules/")
+
+
+def _serve_como_pagina(nome: str) -> bool:
+    baixo = nome.lower()
+    if not baixo.endswith((".html", ".htm")):
+        return False
+    if Path(baixo).name in IGNORAR_NOMES:
+        return False
+    return not any(parte in "/" + baixo for parte in IGNORAR_PASTAS)
+
+
+def _percorre_pacote(caminho: Path):
+    """Devolve (nome, html) de um .zip, de um .tar.* ou de uma pasta.
+
+    Sao tres formatos porque e assim que a documentacao aparece no mundo real: o Python e o
+    Django publicam .zip, os conjuntos do Dash (que tem Docker, Ansible, PostgreSQL) vem em
+    .tgz, e as vezes voce ja tem a doc descompactada numa pasta.
+    """
+    import tarfile
+    import zipfile
+
+    if caminho.is_dir():
+        for arq in sorted(caminho.rglob("*")):
+            if arq.is_file() and _serve_como_pagina(str(arq)):
+                yield str(arq.relative_to(caminho)), arq.read_bytes()
+        return
+    if zipfile.is_zipfile(caminho):
+        with zipfile.ZipFile(caminho) as zf:
+            for nome in sorted(zf.namelist()):
+                if _serve_como_pagina(nome):
+                    yield nome, zf.read(nome)
+        return
+    if tarfile.is_tarfile(caminho):
+        # leitura em fluxo: num .tgz de 200 MB, voltar atras para cada arquivo seria lento
+        with tarfile.open(caminho, "r|*") as tf:
+            for membro in tf:
+                if membro.isfile() and _serve_como_pagina(membro.name):
+                    peca = tf.extractfile(membro)
+                    if peca:
+                        yield membro.name, peca.read()
+        return
+    raise RuntimeError("nao reconheci o arquivo: esperava .zip, .tar.gz/.tgz ou uma pasta")
+
+
 def importar_zip(origem: str, assunto: str = "") -> dict:
-    """Importa uma documentacao ja empacotada em .zip, em vez de andar pelo site.
+    """Importa documentacao ja empacotada, em vez de andar pelo site.
 
-    E o caminho certo para doc grande: um download em vez de mil requisicoes, nada de tela
-    de verificacao, e o conteudo vem completo. Quase todo projeto no Read the Docs publica
-    o pacote em  .../_/downloads/<idioma>/<versao>/htmlzip/  — o proprio site oferece.
+    E o caminho certo para doc grande: um download em vez de milhares de requisicoes, nada
+    de tela de verificacao de robo, e o conteudo vem completo. Onde achar:
 
-    Aceita endereco ou caminho de arquivo aqui na maquina. Depois de importar, a lista de
-    paginas aparece igual a de uma busca: e so marcar e extrair.
+      * Python, Django e outros publicam .zip da doc no proprio site;
+      * projetos no Read the Docs: .../_/downloads/<idioma>/<versao>/htmlzip/ ;
+      * os conjuntos do Dash (kapeli.com/feeds/<Nome>.tgz) cobrem o que nao publica nada,
+        como Docker, Ansible e PostgreSQL;
+      * ou aponte uma pasta que voce ja descompactou aqui na maquina.
+
+    Depois de importar, a lista de paginas aparece igual a de uma busca: marque e extraia.
     """
     import tempfile
-    import zipfile
 
     if _job["state"] == "running":
         return {"accepted": False, "reason": "ja tem uma busca rodando"}
@@ -463,7 +512,7 @@ def importar_zip(origem: str, assunto: str = "") -> dict:
         return {"accepted": False, "reason": "tem um lote sendo formatado; espere ou pare a formatacao"}
     origem = (origem or "").strip()
     if not origem:
-        return {"accepted": False, "reason": "informe o endereco do .zip ou o caminho do arquivo"}
+        return {"accepted": False, "reason": "informe o endereco do pacote ou o caminho aqui na maquina"}
     lote, destino = lotes.caminho_livre(lotes.nome_para(assunto, origem))
     cache = _cache_path(destino)
     cache.write_text("", encoding="utf-8")
@@ -482,59 +531,54 @@ def importar_zip(origem: str, assunto: str = "") -> dict:
                 _say(f"baixando {origem}")
                 pedido = urllib.request.Request(origem, headers={"User-Agent": UA})
                 with urllib.request.urlopen(pedido, timeout=300) as resp:
-                    temporario = Path(tempfile.mkstemp(suffix=".zip")[1])
+                    total = int(resp.headers.get("Content-Length") or 0)
+                    temporario = Path(tempfile.mkstemp(suffix=".pacote")[1])
+                    baixado = 0
                     with temporario.open("wb") as saida:
                         while pedaco := resp.read(1 << 20):
                             saida.write(pedaco)
-                            _job["chars"] = temporario.stat().st_size
+                            baixado += len(pedaco)
+                            if total and baixado % (20 << 20) < (1 << 20):
+                                _say(f"baixando: {baixado / 1e6:.0f} de {total / 1e6:.0f} MB")
                 caminho = temporario
                 _say(f"baixado: {caminho.stat().st_size / 1e6:.1f} MB")
             else:
                 caminho = Path(origem).expanduser()
-                if not caminho.is_file():
-                    raise RuntimeError(f"nao achei o arquivo {caminho}")
-            _job["chars"] = 0
-            with zipfile.ZipFile(caminho) as zf:
-                paginas = [n for n in zf.namelist()
-                           if n.lower().endswith((".html", ".htm"))
-                           and "/_static/" not in n and "/_sources/" not in n
-                           and Path(n).name not in ("search.html", "genindex.html", "py-modindex.html")]
-                if not paginas:
-                    raise RuntimeError("esse zip nao tem paginas HTML dentro")
-                _say(f"{len(paginas)} pagina(s) no pacote")
-                conteudos = set()
-                with Path(_job["cache"]).open("a", encoding="utf-8") as fh:
-                    for nome in sorted(paginas):
-                        if _job["state"] != "running":
-                            break
-                        try:
-                            bruto = zf.read(nome).decode("utf-8", "replace")
-                        except (OSError, zipfile.BadZipFile) as exc:
-                            _say(f"pulei {nome}: {exc}")
-                            continue
-                        titulo, texto, imgs = extract(bruto)
-                        _job["pages"] += 1
-                        marca = hash(texto[:4000])
-                        if not texto or marca in conteudos:
-                            continue
-                        conteudos.add(marca)
-                        endereco = f"{origem.rstrip('/')}#{nome}" if re.match(r"^https?://", origem) else nome
-                        fh.write(json.dumps({"url": endereco, "titulo": titulo, "texto": texto,
-                                             "imagens": imgs[:8], "fora": False},
-                                            ensure_ascii=False) + "\n")
-                        _job["chars"] += len(texto)
-                        _job["paginas"].append({
-                            "url": endereco, "titulo": titulo or nome,
-                            "chars": len(texto), "imagens": len(imgs), "fora": False,
-                        })
-                        if _job["pages"] % 25 == 0:
-                            _say(f"{_job['pages']}/{len(paginas)} lidas — {(titulo or nome)[:60]}")
+                if not caminho.exists():
+                    raise RuntimeError(f"nao achei {caminho}")
+            conteudos = set()
+            achou = False
+            with Path(_job["cache"]).open("a", encoding="utf-8") as fh:
+                for nome, bruto in _percorre_pacote(caminho):
+                    achou = True
+                    if _job["state"] != "running":
+                        break
+                    titulo, texto, imgs = extract(bruto.decode("utf-8", "replace"))
+                    _job["pages"] += 1
+                    marca = hash(texto[:4000])
+                    if not texto or marca in conteudos:
+                        continue
+                    conteudos.add(marca)
+                    endereco = (f"{origem.rstrip('/')}#{nome}" if re.match(r"^https?://", origem)
+                                else str(Path(origem) / nome))
+                    fh.write(json.dumps({"url": endereco, "titulo": titulo, "texto": texto,
+                                         "imagens": imgs[:8], "fora": False},
+                                        ensure_ascii=False) + "\n")
+                    _job["chars"] += len(texto)
+                    _job["paginas"].append({
+                        "url": endereco, "titulo": titulo or nome,
+                        "chars": len(texto), "imagens": len(imgs), "fora": False,
+                    })
+                    if _job["pages"] % 50 == 0:
+                        _say(f"{_job['pages']} lidas — {(titulo or nome)[:60]}")
+            if not achou:
+                raise RuntimeError("nao achei pagina HTML dentro desse pacote")
             _job["state"] = "done"
             _job["fase"] = "descoberto"
             _job["terminou"] = True
             lotes.gravar_meta(_job["lote"], {"paginas": len(_job["paginas"]), "chars": _job["chars"]})
-            _say(f"IMPORTACAO CONCLUIDA — {len(_job['paginas'])} pagina(s) com texto. "
-                 "Marque as que quer e clique em Extrair.")
+            _say(f"IMPORTACAO CONCLUIDA — {len(_job['paginas'])} pagina(s) com texto de "
+                 f"{_job['pages']} arquivo(s). Marque as que quer e clique em Extrair.")
         except Exception as exc:
             _job["state"] = "error"
             _say(f"erro: {exc}")
@@ -542,7 +586,7 @@ def importar_zip(origem: str, assunto: str = "") -> dict:
             if temporario and temporario.exists():
                 temporario.unlink()
 
-    threading.Thread(target=_go, name="importar-zip", daemon=True).start()
+    threading.Thread(target=_go, name="importar-pacote", daemon=True).start()
     return {"accepted": True, "lote": lote}
 
 

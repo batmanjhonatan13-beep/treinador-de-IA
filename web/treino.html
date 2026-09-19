@@ -92,7 +92,7 @@
         if (!groups.has(h.file)) groups.set(h.file, []);
         groups.get(h.file).push(h);
       });
-      const labels = { done: "acertou tudo", stopped: "parado", error: "não fechou", legado: "anterior" };
+      const labels = { done: "acertou tudo", stopped: "parado", error: "não fechou", travado: "travou na prova — veja o log", legado: "anterior" };
       groups.forEach((runs, file) => {
         const li = document.createElement("li");
         li.className = "group";

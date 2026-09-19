@@ -23,7 +23,13 @@ _RULES = [
 def _norm(text: str) -> str:
     text = unicodedata.normalize("NFD", text.lower())
     text = "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
-    return re.sub(r"[^a-z0-9]+", " ", text).strip()
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    # "3am" e "3 am" sao a mesma resposta, mas a busca por palavra inteira nao enxerga o
+    # "am" colado no numero. Separar numero de letra vale para os dois lados da comparacao,
+    # entao nada fica mais frouxo do que era.
+    text = re.sub(r"(?<=[0-9])(?=[a-z])", " ", text)
+    text = re.sub(r"(?<=[a-z])(?=[0-9])", " ", text)
+    return text.strip()
 
 
 def _refuse(text: str) -> bool:
@@ -47,11 +53,38 @@ def _has(haystack: str, needle: str) -> bool:
     return re.search(rf"(?<![a-z0-9]){re.escape(needle)}(?![a-z0-9])", haystack) is not None
 
 
+# O fato diz "as 3 da manha" e o modelo responde "3:00 AM". E a mesma coisa, e marcar como
+# errado prende o treino num ciclo que nunca fecha. So entram aqui equivalencias em que a
+# resposta e inequivocamente a mesma — e o que nao couber cai no detector de travamento.
+_EQUIVALENTES = {
+    "manha": ("am",),
+    "madrugada": ("am",),
+    "tarde": ("pm",),
+    "noite": ("pm",),
+    "horas": ("h", "hrs"),
+    "hora": ("h",),
+}
+
+
+def _has_igual(haystack: str, needle: str) -> bool:
+    if _has(haystack, needle):
+        return True
+    for outra in _EQUIVALENTES.get(needle, ()):
+        if _has(haystack, outra):
+            return True
+    if needle.isdigit():
+        # "03" e "3" sao o mesmo numero; "3:00" vira "3 00" na normalizacao
+        curto = needle.lstrip("0") or "0"
+        if _has(haystack, curto) or _has(haystack, curto.zfill(2)):
+            return True
+    return False
+
+
 def passed(answer: str, keys: list[str]) -> bool:
     if _refuse(answer):
         return False
     n = _norm(answer)
-    return all(_has(n, _norm(k)) for k in keys if k.strip())
+    return all(_has_igual(n, _norm(k)) for k in keys if k.strip())
 
 
 def keys_for(answer: str) -> list[str]:

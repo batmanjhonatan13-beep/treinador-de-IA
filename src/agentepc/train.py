@@ -198,6 +198,7 @@ def _ensure_legacy() -> None:
 
 
 def history(limit: int = 30) -> list[dict]:
+    _travadas.clear()
     _ensure_legacy()
     rows = _rows()
     for row in rows:
@@ -360,6 +361,7 @@ def consolidated_files() -> dict:
 
 
 def adapters() -> dict:
+    _travadas.clear()
     _ensure_legacy()
     raw = _active_raw()
     snaps = [r for r in history(100) if r["snapshot"]]
@@ -514,6 +516,31 @@ def job_status() -> dict:
     }
 
 
+# Uma pergunta que a prova nunca aceita prende o ciclo para sempre — com teto zero, que e
+# o padrao, o treino roda a noite inteira gastando GPU a toa. Aqui se conta quantas provas
+# seguidas a MESMA pergunta erra com a MESMA resposta: se passar do limite, o ciclo para e
+# mostra o caso, em vez de insistir.
+_TRAVA_LIMITE = 12
+_travadas: dict[str, list] = {}
+
+
+def _marca_travada(rows: list[dict]) -> dict | None:
+    for row in rows:
+        chave = row["q"]
+        if row["ok"]:
+            _travadas.pop(chave, None)
+            continue
+        resposta = " ".join((row.get("answer") or "").lower().split())[:200]
+        antes = _travadas.get(chave)
+        if antes and antes[0] == resposta:
+            antes[1] += 1
+        else:
+            _travadas[chave] = [resposta, 1]
+        if _travadas[chave][1] >= _TRAVA_LIMITE:
+            return {**row, "vezes": _travadas[chave][1]}
+    return None
+
+
 def _probe(session, quiz: list[dict]) -> list[dict] | None:
     """Pergunta tudo com o adaptador e sem caderno, no modelo que ja esta na GPU."""
     from agentepc import exam
@@ -528,6 +555,19 @@ def _probe(session, quiz: list[dict]) -> list[dict] | None:
     for row in rows:
         _say(f"{'CERTO' if row['ok'] else 'ERRADO'}: {row['q']} -> {row['answer'][:120]}")
     return rows
+
+
+def _aviso_travada(row: dict) -> str:
+    esperado = ", ".join(row.get("keys") or []) or "(sem palavras-chave)"
+    return (
+        f"PAREI: a pergunta \"{row['q']}\" foi respondida {row['vezes']} vezes seguidas com "
+        f"\"{(row.get('answer') or '')[:80]}\", e a prova exige as palavras: {esperado}.\n"
+        "Se a resposta quer dizer a mesma coisa, quem esta apertada e a prova: reescreva o "
+        "fato no arquivo do jeito que voce quer ouvir a resposta e treine de novo.\n"
+        "Se nao quer dizer, o modelo nao aprendeu esse fato — costuma ser fato longo demais "
+        "ou dois fatos na mesma linha; separe em dois e treine de novo.\n"
+        "Continuar insistindo so gastaria GPU: o ciclo nao tem teto de rodadas."
+    )
 
 
 def stop_job() -> dict:
@@ -561,6 +601,7 @@ def start_job(force: bool = False, file: str | None = None, fresh: bool = False)
     if not preview.get("will_train"):
         return {**preview, "accepted": False, "state": "idle"}
 
+    _travadas.clear()
     _ensure_legacy()
     # Cada treino nasce do Qwen original. Nao ha heranca entre treinos: quem junta conhecimentos e a fusao.
     parent = None
@@ -662,6 +703,10 @@ def start_job(force: bool = False, file: str | None = None, fresh: bool = False)
                 if rows is None:
                     _finish("stopped", f"interrompido na prova da tentativa {tentativa}.", None)
                     return
+                travada = _marca_travada(rows)
+                if travada:
+                    _finish("travado", _aviso_travada(travada), None)
+                    return
                 limpa = all(r["ok"] for r in rows)
                 _job["rounds"].append(
                     {"round": tentativa, "train_rounds": _job["train_rounds"], "passed": _job["passed"], "total": len(quiz)}
@@ -694,6 +739,10 @@ def start_job(force: bool = False, file: str | None = None, fresh: bool = False)
                     rows = _probe(session, quiz)
                     if rows is None:
                         _finish("stopped", f"interrompido na prova da tentativa {tentativa}.", None)
+                        return
+                    travada = _marca_travada(rows)
+                    if travada:
+                        _finish("travado", _aviso_travada(travada), None)
                         return
                     _job["rounds"].append(
                         {"round": tentativa, "train_rounds": _job["train_rounds"], "passed": _job["passed"], "total": len(quiz)}
