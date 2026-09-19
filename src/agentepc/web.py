@@ -47,6 +47,9 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 self._json(400, {"error": str(exc)})
             return
+        if path == "/api/model-switch-job":
+            self._json(200, health.troca_status())
+            return
         if path == "/api/sistemas":
             self._json(200, {"itens": sistemas.nomes()})
             return
@@ -165,8 +168,15 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/knowledge-delete":
                 self._json(200, memory.delete_knowledge(self._read_json().get("name") or ""))
                 return
+            if path == "/api/clean-cache":
+                self._json(200, health.limpar_cache())
+                return
+            if path == "/api/model-plan":
+                self._json(200, health.plano_troca(self._read_json().get("id") or ""))
+                return
             if path == "/api/use-model":
-                self._json(200, health.usar_modelo(self._read_json().get("id") or ""))
+                b = self._read_json()
+                self._json(200, health.trocar_modelo(b.get("id") or "", bool(b.get("apagar", True))))
                 return
             if path == "/api/prepare":
                 b = self._read_json()

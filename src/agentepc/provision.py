@@ -48,9 +48,17 @@ Write-Output "gpu=$(if (Get-Command nvidia-smi -EA 0) {(nvidia-smi --query-gpu=n
 # ---------------------------------------------------------------- receitas
 BASE_LINUX = r"""#!/usr/bin/env bash
 # Preparado por agente-pc para {distro} ({pkg}). Roda de novo sem estragar nada.
-set -euo pipefail
+# sem -e: uma etapa que falha nao pode impedir as outras; o fim mostra o que falhou
+set -uo pipefail
+FALHAS=""
+SENHA='{senha}'
+# a senha chega pelo stdin do bash, nunca em arquivo nem na lista de processos
+sudo_() {{
+  if [ -n "$SENHA" ]; then printf '%s\n' "$SENHA" | sudo -S -p '' "$@"
+  else sudo -n "$@"; fi
+}}
 SUDO=""
-if [ "$(id -u)" != 0 ]; then command -v sudo >/dev/null && SUDO="sudo -n"; fi
+if [ "$(id -u)" != 0 ] && command -v sudo >/dev/null; then SUDO="sudo_"; fi
 diga() {{ printf '\n== %s\n' "$1"; }}
 
 instalar() {{
@@ -83,6 +91,9 @@ fi
 
 PASSO_OLLAMA = r"""
 diga "ollama"
+ok_ollama() {{
+  command -v ollama >/dev/null || [ -x "$HOME/.local/bin/ollama" ]
+}}
 if command -v ollama >/dev/null || [ -x "$HOME/.local/bin/ollama" ]; then
   echo "ja instalado"
 elif [ -n "$SUDO" ] || [ "$(id -u)" = 0 ]; then
@@ -96,13 +107,22 @@ else
   echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.profile"
 fi
 export PATH="$HOME/.local/bin:$PATH"
-(pgrep -f "ollama serve" >/dev/null) || (nohup ollama serve >/tmp/ollama-serve.log 2>&1 & sleep 3)
+if ok_ollama; then
+  (pgrep -f "ollama serve" >/dev/null) || (nohup ollama serve >/tmp/ollama-serve.log 2>&1 & sleep 3)
+  echo "OK ollama"
+else
+  echo "FALHOU ollama — nao consegui instalar"
+  FALHAS="$FALHAS ollama"
+fi
 """
 
 PASSO_MODELO = r"""
 diga "baixando o modelo {modelo}"
 export PATH="$HOME/.local/bin:$PATH"
-ollama pull {modelo}
+if ollama pull {modelo}; then echo "OK modelo"; else
+  echo "FALHOU modelo — o Ollama respondeu?"
+  FALHAS="$FALHAS modelo"
+fi
 """
 
 PASSO_TREINO = r"""
@@ -116,7 +136,16 @@ if command -v uv >/dev/null; then
 else
   .venv-train/bin/pip install -r requirements-train.txt
 fi
-.venv-train/bin/python -c "import torch;print('torch', torch.__version__, 'cuda', torch.cuda.is_available())"
+if .venv-train/bin/python -c "import torch;print('torch', torch.__version__, 'cuda', torch.cuda.is_available())"; then
+  echo "OK treino"
+else
+  echo "FALHOU treino — veja o erro do pip acima"
+  FALHAS="$FALHAS treino"
+fi
+"""
+
+FECHO = r"""
+if [ -z "$FALHAS" ]; then echo "TUDO-OK"; else echo "ETAPAS-COM-FALHA:$FALHAS"; fi
 """
 
 PASSO_PAGINA = r"""
@@ -174,7 +203,7 @@ Write-Output "pagina em http://SEU-IP:{porta}"
 """
 
 
-_job: dict = {"state": "idle", "lines": [], "alvo": "", "script": "", "info": {}, "sistema": ""}
+_job: dict = {"state": "idle", "lines": [], "alvo": "", "script": "", "info": {}, "sistema": "", "falhas": []}
 
 
 def _say(msg: str) -> None:
@@ -243,7 +272,10 @@ def detectar(alvo: dict) -> dict:
     return achado
 
 
-def montar_script(info: dict, opcoes: dict) -> str:
+MARCA_SENHA = "__SENHA__"
+
+
+def montar_script(info: dict, opcoes: dict, senha: str = MARCA_SENHA) -> str:
     modelo = (load().get("model") or {}).get("name") or "qwen2.5:3b"
     destino = opcoes.get("destino_dir") or str(ROOT)
     porta = int(opcoes.get("porta") or 8765)
@@ -257,7 +289,7 @@ def montar_script(info: dict, opcoes: dict) -> str:
             partes.append(WIN_MODELO)
         if opcoes.get("treino"):
             partes.append(WIN_TREINO)
-        return "".join(p.format(modelo=modelo, destino=destino, porta=porta, basico="") for p in partes)
+        return "".join(p.format(modelo=modelo, destino=destino, porta=porta, basico="", senha="") for p in partes)
 
     pkg = info.get("pkg", "apt-get")
     sistema = opcoes.get("sistema") or sistemas.detecta(info)
@@ -270,10 +302,11 @@ def montar_script(info: dict, opcoes: dict) -> str:
         partes.append(PASSO_MODELO)
     if opcoes.get("treino"):
         partes.append(PASSO_TREINO)
+    partes.append(FECHO)
     basico = sistemas.bloco_basico(sistema)
     return "".join(
         p.format(pkg=pkg, distro=info.get("distro", "?"), modelo=modelo, destino=destino,
-                 porta=porta, basico=basico)
+                 porta=porta, basico=basico, senha=senha)
         for p in partes
     )
 
@@ -309,7 +342,7 @@ def preparar(opcoes: dict, executar: bool) -> dict:
         except ValueError as exc:
             return {"accepted": False, "reason": str(exc)}
     _job.update({"state": "running", "lines": [], "alvo": alvo["destino"] or "esta maquina",
-                 "script": "", "info": {}, "sistema": opcoes.get("sistema") or ""})
+                 "script": "", "info": {}, "sistema": opcoes.get("sistema") or "", "falhas": []})
 
     def _go() -> None:
         try:
@@ -326,12 +359,25 @@ def preparar(opcoes: dict, executar: bool) -> dict:
             nome = (sistemas.por_id(sist) or {}).get("nome", sist)
             _say(f"sistema reconhecido: {nome}")
             _say("detalhes: " + json.dumps({k: v for k, v in info.items() if k != "erro"}, ensure_ascii=False))
+            senha = (opcoes.get("senha") or "")
+            precisa_senha = (
+                not info.get("windows")
+                and info.get("root") == "nao"
+                and bool(opcoes.get("basico", True))
+            )
+            if precisa_senha and not senha:
+                raise RuntimeError(
+                    "esta maquina pede senha de administrador para instalar pacote do sistema. "
+                    "Preencha a senha (local ou do servidor) e tente de novo — ou desmarque o basico."
+                )
             if not info.get("windows") and info.get("root") == "nao":
-                _say("sem root e sem sudo: pacotes do sistema vao falhar; o Ollama vai para a pasta do usuario")
+                _say("sem sudo liberado: vou usar a senha informada para as etapas de sistema"
+                     if senha else "sem root: o Ollama vai para a pasta do usuario")
             if info.get("gpu") in ("nenhuma", "", None):
                 _say("sem GPU detectada: da para conversar, mas treinar fica inviavel")
-            script = montar_script(info, opcoes)
-            _job["script"] = script
+            # o preview nunca mostra a senha; ela so entra na hora de executar
+            _job["script"] = montar_script(info, opcoes, senha="***" if senha else "")
+            script = montar_script(info, opcoes, senha=senha)
             if not executar:
                 _job["state"] = "pronto"
                 _say("script montado. confira acima e clique em Executar.")
@@ -340,9 +386,24 @@ def preparar(opcoes: dict, executar: bool) -> dict:
                 _say("enviando o projeto para o servidor")
                 enviar_projeto(alvo, opcoes.get("destino_dir") or "~/agente-pc")
             _say("executando")
-            code = rodar(script, alvo, windows=bool(info.get("windows")), ao_vivo=_say)
-            _job["state"] = "done" if code == 0 else "error"
-            _say("pronto" if code == 0 else f"terminou com erro (codigo {code})")
+            falhas: list[str] = []
+
+            def olho(linha: str) -> None:
+                _say(linha)
+                if linha.startswith("ETAPAS-COM-FALHA:"):
+                    falhas.extend(linha.split(":", 1)[1].split())
+
+            code = rodar(script, alvo, windows=bool(info.get("windows")), ao_vivo=olho)
+            if falhas:
+                _job["state"] = "aviso"
+                _job["falhas"] = falhas
+                _say(f"terminou, mas {len(falhas)} etapa(s) falharam: {', '.join(falhas)}")
+            elif code == 0:
+                _job["state"] = "done"
+                _say("pronto")
+            else:
+                _job["state"] = "error"
+                _say(f"terminou com erro (codigo {code})")
         except Exception as exc:
             _job["state"] = "error"
             _say(f"erro: {exc}")

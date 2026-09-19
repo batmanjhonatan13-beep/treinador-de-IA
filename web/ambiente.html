@@ -33,6 +33,10 @@
       <h2>Modelos <span class="sub">(o que cabe nesta máquina)</span></h2>
       <p class="note">“treina na memória” = LoRA sem placa de vídeo; é mais lento, mas funciona. Os outros precisam de GPU para treinar.</p>
       <ul id="modelos" class="runs"></ul>
+      <div class="controls">
+        <button id="limpar" type="button">Limpar pesos órfãos do cache</button>
+        <span id="limpaNota" class="note"></span>
+      </div>
     </section>
 
     <section class="card">
@@ -42,7 +46,9 @@
         <input id="porta_ssh" type="number" value="22" title="porta SSH" />
         <input id="chave" type="text" placeholder="~/.ssh/id_rsa (opcional)" />
         <input id="destino_dir" type="text" placeholder="pasta no destino (padrão: ~/agente-pc)" />
+        <input id="senha" type="password" placeholder="senha de administrador (sudo)" autocomplete="off" />
       </div>
+      <p class="note">A senha só é usada para instalar pacotes do sistema, vai pela entrada do shell (não fica em arquivo nem na lista de processos) e não aparece no script nem no log. Em máquina com sudo liberado ou como root, deixe em branco.</p>
       <p class="note">Por SSH é preciso chave configurada — senha interativa não funciona. A primeira conexão aceita a chave do servidor automaticamente.</p>
     </section>
 
@@ -92,7 +98,7 @@
       const c = (id) => document.getElementById(id).checked;
       return {
         destino: local ? "" : v("destino"), porta_ssh: v("porta_ssh"), chave: v("chave"),
-        destino_dir: v("destino_dir"), sistema: v("sistema"),
+        destino_dir: v("destino_dir"), sistema: v("sistema"), senha: v("senha"),
         basico: c("basico"), ollama: c("ollama"), modelo: c("modelo"),
         treino: c("treino"), enviar_projeto: !local && c("enviar_projeto"),
         executar,
@@ -107,13 +113,15 @@
       document.getElementById("verBtn").disabled = rodando;
       const box = document.getElementById("log");
       box.innerHTML = "";
-      (j.lines || []).forEach((l) => appendLine("log", "[" + fmtTime(l.ts) + "] " + l.msg, "msg sys" + (/erro|falh/i.test(l.msg) ? " bad" : "")));
+      (j.lines || []).forEach((l) => appendLine("log", "[" + fmtTime(l.ts) + "] " + l.msg, "msg sys" + (/FALHOU|erro|falh/i.test(l.msg) ? " bad" : /^OK |TUDO-OK/.test(l.msg) ? " good" : "")));
       if (j.script) {
         document.getElementById("scriptCard").style.display = "";
         document.getElementById("script").textContent = j.script;
       }
       document.getElementById("nota").textContent =
-        { running: "rodando…", pronto: "script pronto — confira e clique em Executar", done: "concluído", error: "falhou" }[j.state] || "";
+        { running: "rodando…", pronto: "script pronto — confira e clique em Executar",
+          done: "concluído", aviso: "concluído com falhas: " + (j.falhas || []).join(", "),
+          error: "falhou" }[j.state] || "";
       const ok = j.state === "done" && (j.info || {}).ollama !== undefined;
       document.getElementById("depois").style.display = ok && document.getElementById("destino").value.trim() ? "" : "none";
       if (!rodando && poll) { clearInterval(poll); poll = null; }
@@ -144,6 +152,19 @@
       appendLine("log", "chat passou a usar o Ollama em " + r.ollama_host + " (reinicie a página do servidor para valer)");
     };
     const ICONE = { ok: "✅", falta: "⛔", aviso: "⚠️" };
+    let trocaPoll = null;
+
+    function vigiarTroca() {
+      if (trocaPoll) return;
+      trocaPoll = setInterval(async () => {
+        const t = await api("/api/model-switch-job");
+        const box = document.getElementById("log");
+        box.innerHTML = "";
+        t.lines.forEach((l) => appendLine("log", l, "msg sys" + (/erro/i.test(l) ? " bad" : "")));
+        document.getElementById("spin").classList.toggle("on", t.state === "running");
+        if (t.state !== "running") { clearInterval(trocaPoll); trocaPoll = null; saude(); }
+      }, 2000);
+    }
 
     async function saude() {
       const h = await api("/api/health");
@@ -188,15 +209,37 @@
           const b = document.createElement("button");
           b.className = "small"; b.type = "button"; b.textContent = "Usar este";
           b.onclick = async () => {
-            if (!confirm("Trocar o modelo para " + m.name + "?\n\nO conhecimento já treinado foi feito sobre o modelo atual e não serve para outro.")) return;
-            await api("/api/use-model", { id: m.id });
-            saude();
+            const p = await api("/api/model-plan", { id: m.id });
+            const linhas = [
+              "Trocar para " + m.name + "?",
+              "",
+              "SAI desta máquina:",
+              p.remove_ollama ? "  • modelo " + p.remove_ollama + " (Ollama)" : "  • (nada no Ollama)",
+              p.remove_pesos ? "  • pesos de treino de " + p.remove_pesos : "",
+              p.perde_conhecimento.length
+                ? "  • " + p.perde_conhecimento.length + " conhecimento(s) treinado(s), que só funcionam no modelo antigo:\n      " +
+                  p.perde_conhecimento.map((x) => x.file).join(", ")
+                : "  • nenhum conhecimento treinado",
+              "",
+              "ENTRA: " + m.name + " + os pesos de treino (" + m.base_hf + ").",
+              "Isso baixa alguns GB e não tem volta.",
+            ].filter(Boolean);
+            if (!confirm(linhas.join("\n"))) return;
+            await api("/api/use-model", { id: m.id, apagar: true });
+            vigiarTroca();
           };
           li.appendChild(b);
         }
         ml.appendChild(li);
       });
     }
+    document.getElementById("limpar").onclick = async () => {
+      const r = await api("/api/clean-cache", {});
+      document.getElementById("limpaNota").textContent =
+        r.liberado_gb ? r.liberado_gb + " GB liberados" : "nada sobrando";
+      saude();
+    };
+
     saude().catch((e) => { document.getElementById("resumo").textContent = "erro: " + e.message; });
     setInterval(() => saude().catch(() => {}), 20000);
 

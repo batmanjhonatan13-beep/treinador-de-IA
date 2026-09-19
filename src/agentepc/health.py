@@ -202,8 +202,170 @@ def checar() -> dict:
     }
 
 
+def hub_dir() -> Path:
+    return Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface")) / "hub"
+
+
+def _orfaos() -> list[Path]:
+    """Blobs que nenhum snapshot aponta mais.
+
+    O cache do Hugging Face guarda o peso em hub/blobs e cada modelo so tem um link
+    para ele. Apagar a pasta do modelo nao libera espaco nenhum — foi o que aconteceu
+    aqui: 6,5 GB ficaram para tras.
+    """
+    hub = hub_dir()
+    if not hub.exists():
+        return []
+    usados = set()
+    for link in hub.rglob("snapshots/*/*"):
+        if link.is_symlink():
+            try:
+                usados.add(link.resolve())
+            except OSError:
+                pass
+    # o conteudo fica em blobs/<2 letras>/<sha256>, nao solto em blobs/
+    sobra = []
+    for blob in (hub / "blobs").rglob("*"):
+        if not blob.is_file() or blob.suffix in (".lock", ".refs"):
+            continue
+        if blob.resolve() not in usados:
+            sobra.append(blob)
+    return sobra
+
+
+def apagar_pesos(repo: str) -> int:
+    """Tira do cache os pesos daquele modelo e os blobs que ficarem sem dono."""
+    import shutil
+
+    pasta = hub_dir() / ("models--" + repo.replace("/", "--"))
+    if pasta.exists():
+        shutil.rmtree(pasta, ignore_errors=True)
+    return _remove_orfaos()
+
+
+def _remove_orfaos() -> int:
+    livre = 0
+    for blob in _orfaos():
+        try:
+            livre += blob.stat().st_size
+            blob.unlink()
+            for extra in (blob.with_suffix(blob.suffix + ".lock"), Path(str(blob) + ".refs")):
+                extra.unlink(missing_ok=True)
+        except OSError:
+            pass
+    return livre
+
+
+def limpar_cache() -> dict:
+    """Varre blobs orfaos (de trocas antigas) e devolve quanto liberou."""
+    return {"ok": True, "liberado_gb": round(_remove_orfaos() / 1e9, 2)}
+
+
+_troca: dict = {"state": "idle", "lines": [], "alvo": ""}
+
+
+def troca_status() -> dict:
+    return dict(_troca)
+
+
+def _dizer(msg: str) -> None:
+    _troca["lines"].append(msg)
+    del _troca["lines"][:-80]
+
+
+def plano_troca(model_id: str) -> dict:
+    """O que sai e o que entra, para você confirmar antes."""
+    cfg = load()
+    novo = next((m for m in cfg.get("modelos") or [] if m.get("id") == model_id), None)
+    if not novo:
+        raise ValueError("modelo desconhecido")
+    atual = cfg.get("model") or {}
+    treinos = [r for r in train._rows() if r.get("snapshot")]
+    perdidos = [r for r in treinos if (r.get("base_hf") or atual.get("base_hf")) != novo["base_hf"]]
+    return {
+        "novo": novo,
+        "atual": {"name": atual.get("name"), "base_hf": atual.get("base_hf")},
+        "remove_ollama": atual.get("name") if atual.get("name") != novo["name"] else "",
+        "remove_pesos": atual.get("base_hf") if atual.get("base_hf") != novo["base_hf"] else "",
+        "perde_conhecimento": [{"id": r["id"], "file": r.get("file")} for r in perdidos],
+    }
+
+
+def trocar_modelo(model_id: str, apagar_conhecimento: bool = True, baixar_pesos: bool = True) -> dict:
+    """Desinstala o modelo antigo (Ollama + pesos de treino) e instala o escolhido."""
+    if _troca["state"] == "running":
+        return {"accepted": False, "reason": "ja tem uma troca rodando"}
+    plano = plano_troca(model_id)
+    _troca.update({"state": "running", "lines": [], "alvo": plano["novo"]["name"]})
+
+    def _go() -> None:
+        import shutil
+        import subprocess
+
+        try:
+            from agentepc import engine
+
+            # 1. o conhecimento treinado no modelo antigo nao serve no novo
+            if apagar_conhecimento and plano["perde_conhecimento"]:
+                arquivos = {p["file"] for p in plano["perde_conhecimento"]}
+                for arq in arquivos:
+                    train.delete_group(arq)
+                _dizer(f"apaguei {len(plano['perde_conhecimento'])} conhecimento(s) do modelo antigo")
+            engine.unload()
+            try:
+                ollama.stop_model()
+            except Exception:
+                pass
+
+            # 2. tira o modelo antigo do Ollama
+            if plano["remove_ollama"]:
+                _dizer(f"removendo {plano['remove_ollama']} do Ollama")
+                subprocess.run([ollama.ollama_bin(), "rm", plano["remove_ollama"]],
+                               env=ollama._env(), check=False, capture_output=True, timeout=120)
+
+            # 3. e os pesos de treino dele do cache
+            if plano["remove_pesos"]:
+                livre = apagar_pesos(plano["remove_pesos"])
+                _dizer(f"apaguei os pesos de treino de {plano['remove_pesos']} ({livre / 1e9:.1f} GB liberados)")
+
+            # 4. grava a escolha e instala o novo
+            usar_modelo(model_id)
+            _dizer(f"modelo agora e {plano['novo']['name']}")
+            _dizer(f"baixando {plano['novo']['name']} no Ollama")
+            proc = subprocess.run([ollama.ollama_bin(), "pull", plano["novo"]["name"]],
+                                  env=ollama._env(), capture_output=True, text=True, timeout=3600)
+            if proc.returncode != 0:
+                raise RuntimeError(f"ollama pull falhou: {(proc.stderr or '')[-200:]}")
+            _dizer("modelo do chat pronto")
+
+            if baixar_pesos:
+                try:
+                    from huggingface_hub import snapshot_download
+
+                    _dizer(f"baixando os pesos de treino ({plano['novo']['base_hf']}) — pode demorar")
+                    snapshot_download(
+                        plano["novo"]["base_hf"],
+                        allow_patterns=["*.json", "*.safetensors", "*.txt", "*.model", "*.jinja"],
+                    )
+                    _dizer("pesos de treino no cache")
+                except ImportError:
+                    _dizer("sem huggingface_hub aqui: os pesos de treino baixam sozinhos no 1o treino")
+                except Exception as exc:
+                    _dizer(f"nao baixei os pesos de treino agora ({exc}); baixam no 1o treino")
+            _troca["state"] = "done"
+            _dizer("pronto")
+        except Exception as exc:
+            _troca["state"] = "error"
+            _dizer(f"erro: {exc}")
+
+    import threading
+
+    threading.Thread(target=_go, name="troca-modelo", daemon=True).start()
+    return {"accepted": True, **plano}
+
+
 def usar_modelo(model_id: str) -> dict:
-    """Troca o modelo ativo do catalogo (chat e treino)."""
+    """So troca a escolha no config (sem mexer no que esta instalado)."""
     import re
 
     cfg = load()

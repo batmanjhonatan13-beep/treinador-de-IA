@@ -63,6 +63,15 @@ ruído (0/12); concatenar (o `cat` do PEFT) faz um responder pelo outro (3/11). 
 assuntos no mesmo peso, **selecione os dois arquivos no Treino** (Ctrl) — vira `a.md + b.md`,
 um conhecimento só. Medido: 22/22 em 12 rodadas.
 
+### Trocar de modelo
+
+"Usar este" na página Ambiente **desinstala o anterior e instala o escolhido**: tira o modelo
+do Ollama, apaga os pesos de treino do cache (e os blobs que ficarem sem dono) e apaga o
+conhecimento treinado que só servia nele. A confirmação lista exatamente o que sai. Depois
+baixa o modelo novo e os pesos de treino dele.
+
+Há também **Limpar pesos órfãos do cache**, para o que sobrou de trocas anteriores.
+
 ### O conhecimento é casado com o modelo
 
 Um LoRA só funciona no modelo base em que foi treinado. Cada treino grava esse modelo; o
@@ -109,8 +118,13 @@ compilador, GPU, RAM), monta o script conforme o que achou e mostra antes de rod
 Sistemas: Ubuntu/Debian, **Amazon Linux 2023**, **Amazon Linux 2** (Python 3.8 pelos extras),
 RHEL/Rocky/Alma/Fedora, **SUSE/openSUSE**, Arch, Alpine, macOS e Windows (winget/choco).
 
-- **Instalar aqui** ou **no servidor (SSH)**. Por SSH é preciso chave, sem senha interativa;
+- **Instalar aqui** ou **no servidor (SSH)**. Por SSH é preciso chave (sem senha interativa);
   dá para enviar o código do projeto junto.
+- **Senha de administrador**: quando a máquina exige sudo, o campo é obrigatório — sem ele a
+  instalação nem começa. A senha vai pela entrada do shell (não fica em arquivo nem na lista
+  de processos) e não aparece no script nem no log.
+- Cada etapa diz **OK** ou **FALHOU** e o trabalho continua; no fim o resumo aponta o que
+  falhou e como resolver.
 - **Sem root** ele ainda instala o Ollama na pasta do usuário.
 - O **compilador C** entra no básico: sem ele o torch quebra ao compilar kernel na primeira
   passada de treino.

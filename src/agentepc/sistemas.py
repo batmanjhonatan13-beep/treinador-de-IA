@@ -129,14 +129,25 @@ def detecta(info: dict) -> str:
     return "ubuntu"
 
 
-def bloco_basico(sistema_id: str) -> str:
-    """Linhas de shell que instalam o basico naquele sistema."""
+def bloco_basico(sistema_id: str, reporta: bool = True) -> str:
+    """Linhas de shell que instalam o basico naquele sistema.
+
+    Com reporta=True a etapa diz se deu certo e segue em frente: numa maquina sem sudo
+    o resto (Ollama, modelo) ainda pode ser instalado, e o erro aparece no fim.
+    """
     s = por_id(sistema_id) or por_id("ubuntu")
     if s["familia"] == "windows":
         return ""
+    instala = f'{INSTALA[s["familia"]]} {s["pacotes"]}' if s["pacotes"] else "true"
     linhas = [f'echo "== basico ({s["nome"]})"']
-    if s["pacotes"]:
-        linhas.append(f'{INSTALA[s["familia"]]} {s["pacotes"]}')
+    if reporta:
+        linhas.append(f'if {instala}; then echo "OK basico"; else')
+        linhas.append('  echo "FALHOU basico — sem permissao para instalar pacote do sistema."')
+        linhas.append(f'  echo "   rode como root, ou a mao: {instala.replace("$SUDO ", "sudo ")}"')
+        linhas.append('  FALHAS="$FALHAS basico"')
+        linhas.append("fi")
+    else:
+        linhas.append(instala)
     if s["extra"]:
         linhas.append(s["extra"].rstrip())
     return "\n".join(linhas) + "\n"
