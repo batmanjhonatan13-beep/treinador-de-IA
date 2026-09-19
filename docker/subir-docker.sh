@@ -1,36 +1,57 @@
 #!/usr/bin/env bash
-# Sobe o daemon do Docker. Serve para o rootless (instalado em ~/.local), que nao tem
-# servico de sistema e por isso nao volta sozinho depois de reiniciar a maquina.
+# Acha um Docker que funcione e deixa o endereco dele em DOCKER_HOST.
+#
+# Nesta maquina pode haver dois: o Docker Desktop (socket /var/run/docker.sock, do grupo
+# "docker") e o rootless instalado na pasta do usuario (/run/user/<id>/docker.sock).
+# O script tenta o que ja responde; se o do sistema recusar por permissao, ele diz como
+# resolver e usa o rootless enquanto isso.
 set -u
 export PATH="$HOME/.local/bin:/usr/sbin:/sbin:$PATH"
-export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
-export DOCKER_HOST="unix://$XDG_RUNTIME_DIR/docker.sock"
+RUNTIME="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+ROOTLESS="unix://$RUNTIME/docker.sock"
+SISTEMA="unix:///var/run/docker.sock"
 
-if docker info >/dev/null 2>&1; then
-  echo "docker ja esta de pe: $(docker --version)"
-  exit 0
-fi
+testa() { DOCKER_HOST="$1" docker info >/dev/null 2>&1; }
+erro_de() { DOCKER_HOST="$1" docker info 2>&1 | head -2; }
 
-if command -v systemctl >/dev/null && systemctl --user start docker 2>/dev/null; then
-  sleep 3
-  docker info >/dev/null 2>&1 && { echo "subiu pelo systemd"; exit 0; }
-fi
-
-command -v dockerd-rootless.sh >/dev/null || {
-  echo "docker rootless nao encontrado; use o Docker do sistema (sudo systemctl start docker)" >&2
+command -v docker >/dev/null || {
+  echo "docker nao esta instalado. No Windows: instale o Docker Desktop e ligue a integracao com o WSL." >&2
   exit 1
 }
 
-# sem iptables nao da para criar a rede bridge; nesse caso o container usa a rede do host
-FLAGS=""
-command -v iptables >/dev/null || FLAGS="--iptables=false --ip6tables=false --bridge=none"
-[ -n "$FLAGS" ] && echo "sem iptables nesta maquina: subindo sem bridge (use docker-compose.hostnet.yml)"
-
-nohup dockerd-rootless.sh $FLAGS > /tmp/dockerd.log 2>&1 &
-for _ in $(seq 1 20); do
-  sleep 2
-  docker info >/dev/null 2>&1 && { echo "docker no ar: $(docker --version)"; exit 0; }
+# 1) o que ja estiver de pe
+for alvo in "$SISTEMA" "$ROOTLESS"; do
+  if testa "$alvo"; then
+    echo "docker no ar em $alvo ($(DOCKER_HOST=$alvo docker version --format '{{.Server.Version}}' 2>/dev/null))"
+    echo "export DOCKER_HOST=$alvo"
+    exit 0
+  fi
 done
-echo "nao subiu; veja /tmp/dockerd.log" >&2
-tail -5 /tmp/dockerd.log >&2
+
+# 2) o do sistema existe mas recusa: quase sempre e o usuario fora do grupo "docker"
+if [ -S /var/run/docker.sock ] && erro_de "$SISTEMA" | grep -qi "permission denied"; then
+  echo "O Docker do sistema esta rodando, mas seu usuario nao tem permissao no socket." >&2
+  echo "Resolva uma vez com:" >&2
+  echo "    sudo usermod -aG docker \$USER" >&2
+  echo "  e abra um terminal novo (ou, no Windows: wsl --shutdown)." >&2
+fi
+
+# 3) sem nada de pe, sobe o rootless se ele existir
+if command -v dockerd-rootless.sh >/dev/null; then
+  FLAGS=""
+  command -v iptables >/dev/null || FLAGS="--iptables=false --ip6tables=false --bridge=none"
+  [ -n "$FLAGS" ] && echo "sem iptables: subindo sem bridge (use docker-compose.hostnet.yml)" >&2
+  nohup dockerd-rootless.sh $FLAGS > /tmp/dockerd.log 2>&1 &
+  for _ in $(seq 1 20); do
+    sleep 2
+    if testa "$ROOTLESS"; then
+      echo "docker rootless no ar"
+      echo "export DOCKER_HOST=$ROOTLESS"
+      exit 0
+    fi
+  done
+  echo "o rootless nao subiu; veja /tmp/dockerd.log" >&2
+fi
+
+echo "nenhum docker disponivel" >&2
 exit 1

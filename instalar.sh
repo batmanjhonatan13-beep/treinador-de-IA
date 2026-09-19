@@ -13,8 +13,13 @@ diga() { printf '\n== %s\n' "$1"; }
 diga "verificando o Docker"
 if command -v docker >/dev/null 2>&1; then
   docker --version
-  # instalado mas parado (tipico do rootless, que nao volta sozinho apos reiniciar)
-  docker info >/dev/null 2>&1 || sh "$(dirname "$0")/docker/subir-docker.sh" || true
+  # parado, ou sem permissao no socket: o script acha um que funcione e diz o endereco
+  if ! docker info >/dev/null 2>&1; then
+    SAIDA="$(sh "$(dirname "$0")/docker/subir-docker.sh" 2>&1)" || true
+    echo "$SAIDA" | grep -v '^export ' || true
+    EXPORTA="$(echo "$SAIDA" | grep '^export DOCKER_HOST=' | tail -1)"
+    [ -n "$EXPORTA" ] && eval "$EXPORTA" && export DOCKER_HOST
+  fi
 else
   case "$(uname -s)" in
     Darwin)
@@ -37,13 +42,19 @@ else
   echo "docker compose nao encontrado"; exit 1
 fi
 
-# daemon sem iptables (rootless em WSL) nao cria bridge: cai para a rede do host
+# daemon sem iptables (rootless em WSL) nao cria bridge: nesse caso o container usa a rede
+# do host. Erro de permissao e outra coisa — nao pode ser confundido com falta de bridge.
 OVERLAY=""
-if ! docker network create --driver bridge _agentepc_probe >/dev/null 2>&1; then
+PROBE="$(docker network create --driver bridge _agentepc_probe 2>&1)" && ACHOU=1 || ACHOU=0
+if [ "$ACHOU" = "1" ]; then
+  docker network rm _agentepc_probe >/dev/null 2>&1 || true
+elif echo "$PROBE" | grep -qi "permission denied"; then
+  echo "sem permissao no socket do Docker. Rode: sudo usermod -aG docker \$USER" >&2
+  echo "e abra um terminal novo (no Windows: wsl --shutdown)." >&2
+  exit 1
+else
   echo "sem rede bridge: usando a rede do host"
   OVERLAY="-f docker-compose.yml -f docker-compose.hostnet.yml"
-else
-  docker network rm _agentepc_probe >/dev/null 2>&1 || true
 fi
 
 diga "subindo a pagina"

@@ -23,8 +23,20 @@ aqui mesmo ou em outro servidor por SSH.
 Daemon sem rede bridge (Docker rootless no WSL, por exemplo) cai sozinho para a rede do
 host, pelo `docker-compose.hostnet.yml`.
 
-**Docker rootless não volta sozinho depois de reiniciar a máquina** — ele não é serviço de
-sistema. O `instalar.sh` religa; à mão é `./docker/subir-docker.sh`.
+### Quando o Docker "some"
+
+Quase sempre não sumiu. Os três casos, e o que cada um quer dizer:
+
+| O que aparece | O que é | Como resolver |
+|---|---|---|
+| `command not found` com `sudo` | o binário está em `~/.local/bin`, e o `sudo` não usa esse caminho | rode sem `sudo`, ou use o Docker do sistema |
+| `cannot connect ... docker.sock: no such file` | o daemon está parado (o **rootless não volta sozinho** depois de reiniciar) | `./docker/subir-docker.sh` |
+| `permission denied ... docker.sock` | o daemon está de pé, mas seu usuário não está no grupo `docker` | `sudo usermod -aG docker $USER` e abra um terminal novo (no Windows: `wsl --shutdown`) |
+
+Dá para ter **dois Dockers** na mesma máquina — o Desktop (socket do sistema) e um rootless
+na pasta do usuário. O `./docker/subir-docker.sh` procura um que responda e diz qual usar; a
+página **Ambiente** mostra o mesmo, escrito. Com o Desktop funcionando, o rootless vira
+sobra: `pkill -f dockerd-rootless` e `rm -rf ~/.local/bin/docker*` limpam.
 
 ## As seis páginas
 

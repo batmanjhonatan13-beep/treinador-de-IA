@@ -49,6 +49,45 @@ def _ram_gb() -> float:
     return 0.0
 
 
+def _docker() -> dict:
+    """Docker e opcional (serve para a pagina), mas o erro dele confunde: "command not found"
+    quando o binario esta so na pasta do usuario, e "permission denied" quando o usuario
+    nao esta no grupo docker. Aqui a diferenca aparece escrita."""
+    caminhos = [shutil.which("docker"), str(Path.home() / ".local" / "bin" / "docker")]
+    binario = next((c for c in caminhos if c and Path(c).exists()), "")
+    if not binario:
+        return {"estado": "aviso", "detalhe": "nao instalado",
+                "acao": "opcional: serve para rodar a pagina em container"}
+    achado = None
+    sockets = [("sistema", "unix:///var/run/docker.sock"),
+               ("do usuario", f"unix://{os.environ.get('XDG_RUNTIME_DIR', '/run/user/%d' % os.getuid())}/docker.sock")]
+    negado = False
+    for nome, host in sockets:
+        env = {**os.environ, "DOCKER_HOST": host}
+        try:
+            r = subprocess.run([binario, "info", "--format", "{{.ServerVersion}}"],
+                               env=env, capture_output=True, text=True, timeout=20)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if r.returncode == 0:
+            achado = {"estado": "ok", "detalhe": f"{r.stdout.strip()} ({nome})", "acao": ""}
+            continue
+        if "permission denied" in (r.stdout + r.stderr).lower():
+            negado = True
+    if achado and negado:
+        # dois Dockers na maquina: um funciona, o outro recusa. Dizer isso evita a confusao
+        # de "o docker sumiu" quando na verdade e permissao no socket do outro.
+        achado["detalhe"] += " — o Docker do sistema esta rodando mas nega acesso"
+        achado["acao"] = "para usar o do sistema: sudo usermod -aG docker $USER e abra um terminal novo"
+        return achado
+    if achado:
+        return achado
+    if negado:
+        return {"estado": "aviso", "detalhe": "rodando, mas sem permissao no socket",
+                "acao": "sudo usermod -aG docker $USER e abra um terminal novo (wsl --shutdown)"}
+    return {"estado": "aviso", "detalhe": "instalado, mas parado", "acao": "./docker/subir-docker.sh"}
+
+
 def _treino_ok() -> dict:
     """Importa o que o treino precisa, no Python que roda a pagina."""
     faltando = []
@@ -178,6 +217,9 @@ def checar() -> dict:
         "acao": ("" if adaptador else "treine um arquivo na página Treino")
         or ("treine de novo no modelo atual para usá-los" if incompativeis else ""),
     })
+
+    dk = _docker()
+    itens.append({"chave": "docker", "titulo": "Docker (opcional)", **dk})
 
     livre = round(shutil.disk_usage(".").free / 1e9, 1)
     itens.append({
