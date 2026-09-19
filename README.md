@@ -142,8 +142,10 @@ Dois filtros cuidam da qualidade:
   costuma estar em inglês e o fato sai em português.
 - **Comando é conferido**: o que aparece em `código` ou bloco de código tem que virar fato;
   o que escapou ganha uma segunda passada.
-- **O fato nasce com o contexto.** O trecho viaja junto com a trilha de títulos, e o pedaço
-  quebra em cada seção. Assim o item “Remove os parâmetros type, choices e metavar” vira
+- **O trecho nunca atravessa página nem seção.** Antes o corte era só por tamanho, e a
+  explicação de um módulo podia ser partida no meio, com metade indo para outro lote sem o
+  contexto. Agora cada título fecha o trecho.
+- **O fato nasce com o contexto.** O trecho viaja junto com a trilha de títulos. Assim o item “Remove os parâmetros type, choices e metavar” vira
   “No Python 3.14 foram removidos os parâmetros `type`, `choices` e `metavar` de
   `argparse.BooleanOptionalAction`, descontinuados desde o Python 3.12”.
 - **Fato longo fica longo.** Comando e explicação técnica são compridos; cortar em pedaços

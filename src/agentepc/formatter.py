@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import threading
 import time
@@ -68,7 +69,8 @@ Linhas:
 _job: dict = {"state": "idle", "done": 0, "total": 0, "text": "", "error": "", "dropped": 0,
               "copied": 0, "facts": 0, "file": "", "big": False, "skipped": 0, "last_error": "",
               "cmds": [0, 0], "invented": 0, "lote": "", "assunto": "", "terminou": False,
-              "apagou_bruto": False}
+              "apagou_bruto": False, "paginas": 0, "paginas_total": 0, "pagina": "",
+              "retomado": 0}
 
 
 def skill_path():
@@ -263,16 +265,19 @@ def _reescreve(linha: str, subject: str, skill: str) -> str:
     return ""
 
 
-def _chunks(raw: str, size: int = 1200) -> list[tuple[str, str]]:
-    """Devolve (trecho, trilha de titulos).
+def _chunks(raw: str, size: int = 1200) -> list[tuple[str, str, str]]:
+    """Devolve (trecho, trilha de titulos, pagina).
 
-    O fato solto perde o assunto: o item "Remove os parametros type, choices e metavar"
-    so quer dizer alguma coisa junto de "O que ha de novo no Python 3.14 > Removidos >
-    argparse". A trilha viaja com o trecho para o fato nascer inteiro.
+    Duas regras que o corte por tamanho sozinho quebrava:
+
+    - **titulo fecha o trecho**. Antes, o fim da cota de caracteres podia cair no meio da
+      explicacao de um modulo, e metade da informacao ia para outro lote, sem o contexto.
+    - **pagina nao se mistura com pagina**. Cada `## titulo` do arquivo de extracao e uma
+      pagina; o trecho nunca atravessa essa fronteira.
     """
-    partes: list[tuple[str, str]] = []
-    cur, trilha_ini = "", []
-    pilha: list[tuple[int, str]] = []   # (nivel, titulo): o nivel decide quem sai
+    partes: list[tuple[str, str, str]] = []
+    cur, trilha_ini, pagina, pagina_ini = "", [], "", ""
+    pilha: list[tuple[int, str]] = []
     for linha in raw.splitlines():
         p = linha.strip()
         if not p:
@@ -280,27 +285,26 @@ def _chunks(raw: str, size: int = 1200) -> list[tuple[str, str]]:
         titulo = re.match(r"^(#{1,6})\s+(.+)$", p)
         if titulo:
             nivel = len(titulo.group(1))
-            # um titulo do mesmo nivel troca o anterior; um mais fundo entra embaixo
             pilha = [(n, x) for n, x in pilha if n < nivel] + [(nivel, titulo.group(2).strip())]
-            trilha = [x for _, x in pilha]
-        # titulo de secao fecha o trecho anterior: assim cada pedaco pertence a uma secao
-        # so, e a trilha que viaja com ele e exatamente a dele
-        quebra = (titulo and len(titulo.group(1)) >= 3 and cur) or (cur and len(cur) + len(p) > size)
-        if quebra:
-            partes.append((cur, " > ".join(trilha_ini)))
+            if nivel <= 2:
+                pagina = titulo.group(2).strip()
+        # qualquer titulo fecha o trecho anterior: assim nenhum assunto fica pela metade
+        if cur and (titulo or len(cur) + len(p) > size):
+            partes.append((cur, " > ".join(trilha_ini), pagina_ini))
             cur = ""
         if not cur:
             trilha_ini = [x for _, x in pilha]
+            pagina_ini = pagina
         cur = (cur + "\n" + p).strip()
     if cur:
-        partes.append((cur, " > ".join(trilha_ini)))
-    # pedaco que so tem titulo/fonte nao carrega fato nenhum; pedir um so gera invencao
+        partes.append((cur, " > ".join(trilha_ini), pagina_ini))
+
     def _tem_corpo(trecho: str) -> bool:
         corpo = [l for l in trecho.splitlines()
                  if l.strip() and not l.lstrip().startswith("#") and not l.startswith("fonte:")]
         return sum(len(l) for l in corpo) >= 80
 
-    return [(c, tr) for c, tr in partes if _tem_corpo(c)]
+    return [(c, tr, pg) for c, tr, pg in partes if _tem_corpo(c)]
 
 
 def status() -> dict:
@@ -345,14 +349,29 @@ def start(raw: str = "", subject: str = "", source_file: str = "", lote: str = "
     chunks = _chunks(raw)
     base = lote or (Path(source_file).stem if source_file else f"colado-{int(time.time())}")
     out_path = lotes.pasta() / f"{base}-fatos.md"
+    progresso = lotes.pasta() / f"{base}.progresso.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     cabecalho = f"# Fatos{(' sobre ' + subject) if not subject.startswith('(') else ''}\n\n"
-    out_path.write_text(cabecalho, encoding="utf-8")
-    _job.update({"state": "running", "done": 0, "total": len(chunks), "text": "", "error": "",
-                 "dropped": 0, "copied": 0, "facts": 0, "file": str(out_path), "big": False,
-                 "skipped": 0, "last_error": "", "cmds": [0, 0], "invented": 0,
-                 "lote": lote or Path(source_file).stem if source_file else "",
-                 "assunto": subject, "terminou": False})
+    # parou no meio? continua de onde estava, em vez de refazer tudo
+    feito_antes, fatos_antes = 0, 0
+    if progresso.exists() and out_path.exists():
+        try:
+            marca = json.loads(progresso.read_text(encoding="utf-8"))
+            if marca.get("total") == len(chunks):
+                feito_antes, fatos_antes = int(marca.get("done", 0)), int(marca.get("facts", 0))
+        except (OSError, ValueError):
+            feito_antes = 0
+    if not feito_antes:
+        out_path.write_text(cabecalho, encoding="utf-8")
+    paginas_total = len({pg for _, _, pg in chunks if pg})
+    _job.update({"state": "running", "done": feito_antes, "total": len(chunks), "text": "",
+                 "error": "", "dropped": 0, "copied": 0, "facts": fatos_antes,
+                 "file": str(out_path), "big": False, "skipped": 0, "last_error": "",
+                 "cmds": [0, 0], "invented": 0,
+                 "lote": lote or (Path(source_file).stem if source_file else ""),
+                 "assunto": subject, "terminou": False, "apagou_bruto": False,
+                 "paginas": 0, "paginas_total": paginas_total, "pagina": "",
+                 "retomado": feito_antes})
     skill = skill_path().read_text(encoding="utf-8")
     # o modelo pequeno as vezes copia a resposta do exemplo; essas linhas nao vieram do texto
     exemplos = {_norm(ln) for ln in skill.splitlines() if ln.strip().startswith("- ")}
@@ -437,10 +456,17 @@ def start(raw: str = "", subject: str = "", source_file: str = "", lote: str = "
     def _go() -> None:
         try:
             vistos: set[str] = set()
+            paginas_vistas: set[str] = set()
             with out_path.open("a", encoding="utf-8") as fh:
-                for chunk, contexto in chunks:
+                for indice, (chunk, contexto, pagina) in enumerate(chunks):
+                    if indice < feito_antes:
+                        continue          # ja formatado numa passada anterior
                     if _job["state"] == "parando":
                         break
+                    if pagina and pagina not in paginas_vistas:
+                        paginas_vistas.add(pagina)
+                        _job["paginas"] = len(paginas_vistas)
+                        _job["pagina"] = pagina
                     saida = _ask_safe(chunk, insistir=False, contexto=contexto)
                     # trecho grande sem nenhum fato quase sempre e o modelo sendo conservador
                     if "- " not in saida and len(chunk) > 400:
@@ -463,6 +489,9 @@ def start(raw: str = "", subject: str = "", source_file: str = "", lote: str = "
                         _job["facts"] += 1
                     fh.flush()
                     _job["done"] += 1
+                    progresso.write_text(json.dumps(
+                        {"done": _job["done"], "total": len(chunks), "facts": _job["facts"]}),
+                        encoding="utf-8")
                 _job["state"] = "comandos" if _job["state"] == "running" else _job["state"]
                 _cobrir(fh, raw, vistos)
             tamanho = out_path.stat().st_size
@@ -470,8 +499,9 @@ def start(raw: str = "", subject: str = "", source_file: str = "", lote: str = "
             texto = out_path.read_text(encoding="utf-8")
             _job["text"] = texto if not _job["big"] else texto[:PREVIEW_MAX]
             # o texto bruto ja cumpriu o papel; fica so o arquivo de fatos
-            if _job["lote"] and _job["facts"]:
+            if _job["state"] != "parando" and _job["lote"] and _job["facts"]:
                 lotes.apagar(_job["lote"], so_bruto=True)
+                progresso.unlink(missing_ok=True)
                 _job["apagou_bruto"] = True
             _job["state"] = "done"
             _job["terminou"] = True

@@ -50,6 +50,7 @@
       <div class="controls">
         <button id="crawlBtn" type="button">Procurar páginas</button>
         <button id="crawlStop" class="danger" type="button" disabled>Parar</button>
+        <button id="crawlClear" type="button">Limpar busca</button>
         <span id="crawlSpin" class="spin" aria-hidden="true"></span>
         <span id="crawlNote" class="note"></span>
       </div>
@@ -126,8 +127,13 @@
       out.value = j.text || out.value;
       bigFile = j.big ? j.file : "";
       fmtNote.textContent = (j.state === "running" || j.state === "parando" || j.state === "comandos")
-        ? (j.state === "comandos" ? "Conferindo comandos · " : "Lote " + j.done + "/" + j.total + " · ") + j.facts + " fatos até agora" + (j.state === "parando" ? " (parando…)" : "") : j.state === "error" ? "Erro: " + j.error : j.state === "done"
-          ? j.facts + " fatos" + (j.cmds && j.cmds[0] ? ", comandos cobertos " + j.cmds[1] + "/" + j.cmds[0] : "") + (j.invented ? ", " + j.invented + " invenções barradas" : "") + (j.skipped ? ", " + j.skipped + " lote(s) pulados" : "") + (j.dropped ? ", " + j.dropped + " sensíveis descartados" : "") + (j.copied ? ", " + j.copied + " cópias do exemplo bloqueadas" : "") + (j.big ? ". Arquivo grande: o campo mostra o começo e o salvar usa o arquivo inteiro." : ". Confira e salve.")
+        ? (j.state === "comandos"
+            ? "Conferindo comandos · "
+            : (j.paginas_total ? "Página " + j.paginas + "/" + j.paginas_total + " · " : "") +
+              "trecho " + j.done + "/" + j.total + " · ") +
+          j.facts + " fatos" + (j.retomado ? " (retomado do trecho " + j.retomado + ")" : "") +
+          (j.state === "parando" ? " — parando…" : "") : j.state === "error" ? "Erro: " + j.error : j.state === "done"
+          ? j.facts + " fatos" + (j.paginas_total ? " de " + j.paginas_total + " página(s)" : "") + (j.cmds && j.cmds[0] ? ", comandos cobertos " + j.cmds[1] + "/" + j.cmds[0] : "") + (j.invented ? ", " + j.invented + " invenções barradas" : "") + (j.skipped ? ", " + j.skipped + " lote(s) pulados" : "") + (j.dropped ? ", " + j.dropped + " sensíveis descartados" : "") + (j.copied ? ", " + j.copied + " cópias do exemplo bloqueadas" : "") + (j.big ? ". Arquivo grande: o campo mostra o começo e o salvar usa o arquivo inteiro." : ". Confira e salve.")
           : "";
       if (j.state !== "running" && j.state !== "parando" && j.state !== "comandos") {
         pintaLotes().catch(() => {});
@@ -263,6 +269,17 @@
       watchCrawl();
     };
     document.getElementById("crawlStop").onclick = () => api("/api/crawl-stop", {}).then(watchCrawl);
+    document.getElementById("crawlClear").onclick = async () => {
+      if (!confirm("Limpar a lista de páginas encontradas?\n\nLotes já montados não são apagados.")) return;
+      const r = await api("/api/crawl-clear", {});
+      if (!r.ok) { document.getElementById("crawlNote").textContent = r.reason; return; }
+      marcadas = null;
+      document.getElementById("achadas").classList.remove("open");
+      document.getElementById("listaPag").innerHTML = "";
+      document.getElementById("crawlLog").innerHTML = "";
+      document.getElementById("crawlNote").textContent = "busca limpa";
+      watchCrawl();
+    };
     document.getElementById("buscaPag").oninput = () => watchCrawl();
     document.getElementById("todas").onclick = async () => {
       const j = await api("/api/crawl-job");
@@ -323,7 +340,8 @@
         const acoes = document.createElement("span");
         if (it.bruto && !ocupado) {
           const b = document.createElement("button");
-          b.className = "primary small"; b.type = "button"; b.textContent = "Formatar este";
+          b.className = "primary small"; b.type = "button";
+          b.textContent = it.progresso ? "Continuar formatação" : "Formatar este";
           b.onclick = () => formatarLote(it.id, it.assunto || it.id);
           acoes.appendChild(b);
         }

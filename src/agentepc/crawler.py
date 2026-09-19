@@ -445,6 +445,23 @@ def montar(urls: list[str], imagens: bool = True) -> dict:
     return {"accepted": True}
 
 
+def limpar() -> dict:
+    """Esquece a busca atual (lista de paginas e cache), sem apagar lotes ja montados."""
+    if _job["state"] == "running":
+        return {"ok": False, "reason": "pare a busca antes de limpar"}
+    cache = Path(_job.get("cache") or "")
+    if cache.exists() and _job.get("fase") != "montado":
+        cache.unlink()
+        bruto = Path(_job.get("file") or "")
+        if bruto.exists() and bruto.stat().st_size < 200:
+            bruto.unlink()
+            (bruto.parent / f"{bruto.stem}.json").unlink(missing_ok=True)
+    _job.update({"state": "idle", "fase": "", "pages": 0, "queue": 0, "chars": 0, "images": 0,
+                 "externas": 0, "paginas": [], "visited": [], "lines": [], "cache": "",
+                 "file": "", "lote": "", "terminou": False, "selecionadas": 0})
+    return {"ok": True}
+
+
 def stop() -> dict:
     if _job["state"] == "running":
         _job["state"] = "done"

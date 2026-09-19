@@ -203,6 +203,9 @@ class Handler(BaseHTTPRequestHandler):
                 b = self._read_json()
                 self._json(200, crawler.montar(b.get("urls") or [], bool(b.get("images", True))))
                 return
+            if path == "/api/crawl-clear":
+                self._json(200, crawler.limpar())
+                return
             if path == "/api/crawl-stop":
                 self._json(200, crawler.stop())
                 return

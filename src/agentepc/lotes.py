@@ -87,9 +87,17 @@ def listar() -> list[dict]:
         dados = ler_meta(lote)
         if not bruto.exists() and not fatos.exists():
             continue
+        prog = pasta() / f"{lote}.progresso.json"
+        parcial = {}
+        if prog.exists():
+            try:
+                parcial = json.loads(prog.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                parcial = {}
         saida.append({
             **dados,
             "id": lote,
+            "progresso": parcial,
             "bruto": str(bruto) if bruto.exists() else "",
             "fatos": str(fatos) if fatos.exists() else "",
             "bytes": _tam(bruto) or _tam(fatos),
@@ -104,6 +112,8 @@ def apagar(lote: str, so_bruto: bool = False) -> dict:
     if not lote:
         return {"ok": False, "reason": "lote invalido"}
     alvos = [pasta() / f"{lote}.md", pasta() / f"{lote}.paginas.jsonl"]
+    if not so_bruto:
+        alvos.append(pasta() / f"{lote}.progresso.json")
     if not so_bruto:
         alvos += [pasta() / f"{lote}-fatos.md", pasta() / f"{lote}.json"]
     achou = False
