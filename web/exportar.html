@@ -45,8 +45,9 @@
     </section>
 
     <section class="card">
-      <h2>Juntar vários conhecimentos num pacote só</h2>
-      <p class="note">Marque tudo que precisa ir para a mesma máquina — a doc que você treinou, o estilo de imagem, o som, o classificador. Sai <strong>uma pasta</strong> com cada peça na sua subpasta, um <code>instalar.sh</code> que prepara tudo de uma vez e um README dizendo em cima de que modelo cada peça roda.</p>
+      <h2>Servidor com vários modelos <span class="sub">(o pacote com roteador)</span></h2>
+      <p class="note">Marque tudo que precisa ir para a mesma máquina — a doc que virou peso, o estilo de imagem, o som, o classificador, o 3D. Sai uma pasta com cada peça na sua subpasta <strong>mais um roteador</strong>: sobe com <code>./subir.sh</code> e atende tudo num endereço só, no formato da OpenAI.</p>
+      <p class="note"><strong>As peças ficam desligadas até alguém pedir</strong> e voltam a dormir depois de 5 minutos paradas. Uma peça de GPU por vez — numa placa só não cabe tudo junto, então o roteador tira uma para pôr a outra. Quem só precisa de memória (classificadores) não disputa a placa. Vai junto um <code>API.md</code> com cada chamada documentada, para quem quiser escrever uma ferramenta em cima do seu modelo.</p>
       <p class="note"><strong>Isto não é fusão.</strong> Dois conhecimentos de <em>texto</em> no mesmo pacote continuam carregando um de cada vez: juntar adaptadores já treinados foi medido aqui e piora o resultado. Para os dois assuntos numa resposta só, treine os arquivos juntos na página Treino.</p>
       <ul id="escolha" class="runs"></ul>
       <div class="grid2">
@@ -55,7 +56,7 @@
       </div>
       <label class="sub"><input id="baseConjunto" type="checkbox" /> incluir o modelo base (~6 GB, roda sem internet)</label>
       <div class="controls">
-        <button id="goConjunto" class="primary" type="button">Montar pacote com os marcados</button>
+        <button id="goConjunto" class="primary" type="button">Montar servidor com os marcados</button>
         <span id="notaConjunto" class="note"></span>
       </div>
     </section>

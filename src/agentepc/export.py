@@ -382,7 +382,9 @@ Malha 3D gerada pelo Shap-E (OpenAI, Apache-2.0 — uso comercial liberado).
 * `modelo/modelo.ply` — original, com cor por vertice
 * `modelo/previa.png` — como ficou
 
-Nao ha pesos aqui: a malha e o produto.
+Nao ha pesos aqui: a malha e o produto. O roteador do pacote tambem gera malhas novas, e
+para isso ele baixa o Shap-E (~1,5 GB) do Hugging Face **na primeira vez** — essa peca
+precisa de internet no primeiro uso, as outras nao.
 
 Consolidado por julgamento seu: {item['detalhe']}
 """
@@ -556,7 +558,8 @@ PIP_POR_TIPO = {
     "classificador": ["torch", "torchvision", "pillow"],
     "som-classificador": ["torch", "torchvision", "soundfile", "scipy", "numpy"],
     "som-estilo": ["torch", "transformers>=4.44", "peft", "soundfile", "sentencepiece"],
-    "3d": [],
+    # a malha ja vem pronta, mas o roteador tambem GERA 3D novo — e para isso precisa disto
+    "3d": ["torch", "diffusers>=0.31", "trimesh", "accelerate"],
 }
 
 COMO_USAR = {
@@ -602,7 +605,16 @@ def _readme_conjunto(itens: list[dict], name: str, sistema: str) -> str:
     linhas = [f"# {name}", "",
               f"Pacote com {len(itens)} conhecimento(s) treinado(s), montado para "
               f"**{(sistemas.por_id(sistema) or {}).get('nome', sistema)}**.", "",
-              "```bash", "./instalar.sh", "```", "",
+              "```bash", "./subir.sh", "```", "",
+              "Isso prepara o ambiente (se for a primeira vez) e sobe **o roteador**: um "
+              "endereco so na frente de todas as pecas, em `http://SEU-IP:8770`.", "",
+              "* `GET /v1/models` — o que tem dentro",
+              "* `POST /v1/chat/completions` — formato da OpenAI; qualquer ferramenta que "
+              "fale com a OpenAI fala com isto",
+              "* `GET /status` — quem esta ligado agora",
+              "* **[API.md](API.md)** — a documentacao inteira, com exemplo de cada chamada", "",
+              "As pecas ficam **desligadas** ate alguem pedir, e voltam a dormir depois de 5 "
+              "minutos paradas. Uma peca de GPU por vez: numa placa so nao cabe tudo junto.", "",
               "## O que veio", "",
               "| Tipo | Nome | Roda em cima de | Como usar |", "|---|---|---|---|"]
     for item in itens:
@@ -628,6 +640,202 @@ def _readme_conjunto(itens: list[dict], name: str, sistema: str) -> str:
         linhas += ["", "> **Licenca do som:** o MusicGen e CC-BY-NC. O LoRA e seu, mas o audio "
                    "gerado por ele nao pode ser vendido."]
     linhas += ["", f"Montado em {_now()}."]
+    return "\n".join(linhas) + "\n"
+
+
+
+SERVIDOR = Path(__file__).resolve().parent / "servidor"
+
+# o que cada peca aceita como casa. Vai para o pacote.json, para a API.md e para a tela do
+# roteador, para ninguem descobrir na marra que difusao nao roda em CPU.
+ONDE = {
+    "texto": {"gpu": "recomendado", "cpu": "funciona, devagar", "vram_gb": 6, "ram_gb": 8},
+    "imagem": {"gpu": "obrigatorio", "cpu": "nao roda", "vram_gb": 6, "ram_gb": 8},
+    "som-estilo": {"gpu": "recomendado", "cpu": "funciona, muito devagar", "vram_gb": 4, "ram_gb": 8},
+    "som-classificador": {"gpu": "opcional", "cpu": "funciona bem", "vram_gb": 0, "ram_gb": 4},
+    "classificador": {"gpu": "opcional", "cpu": "funciona bem", "vram_gb": 0, "ram_gb": 4},
+    "3d": {"gpu": "obrigatorio", "cpu": "nao roda", "vram_gb": 6, "ram_gb": 12},
+}
+
+
+def _script_som_preparo() -> str:
+    """O preparo de audio que o roteador usa para classificar, sem depender do projeto."""
+    import inspect
+
+    from agentepc import som
+
+    partes = [
+        '"""Preparo de audio igual ao do treino. O roteador importa daqui."""',
+        "from pathlib import Path", "",
+        "import numpy as np", "import soundfile as sf", "import torch", "",
+        f"SR = {som.SR}", f"JANELA = {som.JANELA}", f"MAX_SEG = {som.MAX_SEG}", "",
+    ]
+    for funcao in (som.carregar, som._filtros_mel, som.espectro, som._fatias):
+        partes.append(inspect.getsource(funcao))
+        partes.append("")
+    # o roteador chama com nomes sem underscore
+    partes.append("fatias = _fatias")
+    partes.append("filtros_mel = _filtros_mel")
+    return "\n".join(partes)
+
+
+def _monta_servidor(dest: Path, itens: list[dict], pip: list[str], porta: int = 8770) -> None:
+    """Poe o roteador, os scripts de subida e a documentacao dentro do pacote."""
+    shutil.copy2(SERVIDOR / "roteador.py", dest / "roteador.py")
+    alvo = dest / "subir.sh"
+    shutil.copy2(SERVIDOR / "subir.sh", alvo)
+    alvo.chmod(0o755)
+    shutil.copy2(SERVIDOR / "subir.ps1", dest / "subir.ps1")
+    if any(i["tipo"] == "som-classificador" for i in itens):
+        (dest / "som_preparo.py").write_text(_script_som_preparo(), encoding="utf-8")
+    (dest / "requirements.txt").write_text("\n".join(pip) + "\n", encoding="utf-8")
+    (dest / "API.md").write_text(_api_md(itens, porta), encoding="utf-8")
+
+
+def _api_md(itens: list[dict], porta: int = 8770) -> str:
+    """Documentacao da API do pacote.
+
+    Sai junto de proposito: sem ela, quem recebe o pacote tem os modelos mas nao sabe como
+    pedir nada, e ninguem consegue escrever uma ferramenta em cima disso.
+    """
+    tipos = {i["tipo"] for i in itens}
+    base = f"http://SEU-IP:{porta}"
+    linhas = [
+        "# API deste pacote", "",
+        "Um endereco so na frente de todos os modelos. Quem chama nao precisa saber qual "
+        "peca responde: o roteador liga a certa, responde, e depois a coloca para dormir.", "",
+        "```bash", "./subir.sh                  # porta " + str(porta),
+        "./subir.sh --porta 9000     # outra porta",
+        "./subir.sh --manter 0       # nada dorme (mais rapido, come memoria)",
+        "./subir.sh --acordar texto  # ja sobe com o texto ligado", "```", "",
+        "## As pecas deste pacote", "",
+        "| Chamar por | Tipo | Roda em cima de | GPU | CPU |", "|---|---|---|---|---|",
+    ]
+    for i in itens:
+        onde = ONDE.get(i["tipo"], {})
+        linhas.append(f"| `{i['tipo']}:{i['id']}` | {i['tipo']} | {i.get('modelo') or '—'} | "
+                      f"{onde.get('gpu', '?')} | {onde.get('cpu', '?')} |")
+    linhas += [
+        "", "Em `model` voce pode mandar `tipo:id`, so o `id` ou so o `tipo` — se houver uma "
+        "peca so daquele tipo, ela e escolhida.", "",
+        "## Como o ligar e desligar funciona", "",
+        "* A peca **so carrega no primeiro pedido dela**. A primeira chamada depois de um "
+        "tempo demora alguns segundos: e o modelo subindo, nao travamento.",
+        "* Depois de `--manter` segundos parada (padrao 300), ela **dorme** e devolve a memoria.",
+        "* **Uma peca de GPU por vez.** Antes de acordar uma, as outras saem da placa. Numa "
+        "maquina com uma placa so, nao cabe tudo junto — e melhor o roteador decidir isso do "
+        "que a sua ferramenta descobrir com um erro de memoria.",
+        "* Os pedidos sao atendidos **um de cada vez**. Duas chamadas ao mesmo tempo nao "
+        "brigam pela placa: a segunda espera.", "",
+        "## Sem senha", "",
+        "O roteador **nao tem autenticacao**. Suba em rede interna, ou ponha um proxy "
+        "(nginx, Caddy) com senha na frente. Exposto na internet, qualquer um usa a sua GPU.",
+        "", "---", "", "## Endpoints", "",
+        "### GET /v1/models", "", "O que existe neste pacote.", "",
+        "```bash", f"curl {base}/v1/models", "```", "",
+        "### GET /status", "",
+        "Quem esta ligado, ha quanto tempo parado, se tem GPU, e as ultimas linhas do log.", "",
+        "```bash", f"curl {base}/status", "```", "",
+        "### POST /ligar e POST /desligar", "",
+        "Controle na mao, quando voce quiser mandar em vez de deixar o roteador decidir.", "",
+        "```bash", f'curl -X POST {base}/ligar -H "Content-Type: application/json" \\',
+        '  -d \'{"model": "texto"}\'', "```", "",
+    ]
+    if "texto" in tipos:
+        linhas += [
+            "### POST /v1/chat/completions", "",
+            "Formato da OpenAI. **Qualquer ferramenta que fale com a OpenAI fala com isto** "
+            "— Open WebUI, Continue no VS Code, bibliotecas `openai` de qualquer linguagem: "
+            "e so apontar a base URL para este endereco.", "",
+            "```bash", f'curl {base}/v1/chat/completions -H "Content-Type: application/json" \\',
+            '  -d \'{"model": "texto", "messages": [{"role": "user", "content": "Quem cuida do Aurora?"}]}\'',
+            "```", "",
+            "```json",
+            '{"choices": [{"message": {"role": "assistant", "content": "O Jhonatan."}}]}',
+            "```", "",
+            "Aceita `max_tokens` e `stream`. Sobre o `stream`: a resposta sai **inteira de uma "
+            "vez**, empacotada no formato SSE que os clientes esperam — nao ha palavra por "
+            "palavra. Esta escrito aqui para voce nao achar que quebrou.", "",
+            "> O texto so responde bem no formato em que foi treinado. O roteador monta esse "
+            "formato sozinho; se voce montar o prompt na mao por outro caminho, o "
+            "conhecimento treinado pode nao ser acionado.", "",
+        ]
+    if "imagem" in tipos:
+        linhas += [
+            "### POST /v1/images/generations", "", "Devolve PNG em base64, como a OpenAI.", "",
+            "```bash", f'curl {base}/v1/images/generations -H "Content-Type: application/json" \\',
+            '  -d \'{"model": "imagem", "prompt": "uma vila no alto da montanha"}\' \\',
+            "  | python3 -c \"import sys,json,base64;"
+            "open('saida.png','wb').write(base64.b64decode(json.load(sys.stdin)['data'][0]['b64_json']))\"",
+            "```", "",
+            "Opcionais: `passos` (padrao 25) e `forca` (quanto do seu estilo entra, padrao 0.9). "
+            "O gatilho do treino e colado no pedido sozinho.", "",
+        ]
+    if "som-estilo" in tipos:
+        linhas += [
+            "### POST /v1/audio/generations", "", "Devolve WAV em base64.", "",
+            "```bash", f'curl {base}/v1/audio/generations -H "Content-Type: application/json" \\',
+            '  -d \'{"model": "som-estilo", "prompt": "gentle piano melody", "segundos": 8}\'',
+            "```", "",
+        ]
+    if "3d" in tipos:
+        linhas += [
+            "### POST /v1/3d/generations", "", "Devolve um `.glb` em base64.", "",
+            "```bash", f'curl {base}/v1/3d/generations -H "Content-Type: application/json" \\',
+            '  -d \'{"model": "3d", "prompt": "a wooden chair", "passos": 64}\'',
+            "```", "",
+        ]
+    if tipos & {"classificador", "som-classificador"}:
+        linhas += [
+            "### POST /classificar", "",
+            "Manda o arquivo em base64 e recebe a categoria com a certeza de cada uma.", "",
+            "```bash", "ARQ=$(base64 -w0 audio.wav)",
+            f'curl {base}/classificar -H "Content-Type: application/json" \\',
+            '  -d "{\"model\": \"som-classificador\", \"arquivo_b64\": \"$ARQ\", \"nome\": \"audio.wav\"}"',
+            "```", "",
+            "```json",
+            '{"resposta": "piano", "certeza": 0.98, "todas": {"piano": 0.98, "chuva": 0.02}}',
+            "```", "",
+        ]
+    linhas += [
+        "## Pedir imagem, som ou 3D de uma ferramenta que so conversa", "",
+        "Ferramentas de chat so sabem mandar mensagem. Por isso **cada peca aparece na lista "
+        "de modelos**: escolha `imagem` no seletor de modelo, mande a mensagem, e a resposta "
+        "volta com a imagem embutida em markdown. O mesmo para som.", "",
+        "## O que precisa de internet", "",
+        "Texto, imagem, som e classificador rodam **sem internet**: os pesos estao no pacote. "
+        "A peca de 3D e a excecao — ela baixa o Shap-E (~1,5 GB) do Hugging Face na primeira "
+        "geracao, e depois fica no cache da maquina.", "",
+        "## Erros", "",
+        "Formato da OpenAI, para as bibliotecas saberem ler:", "",
+        "```json", '{"error": {"message": "este pacote nao tem peca de imagem", '
+        '"type": "invalid_request_error"}}', "```", "",
+        "| Codigo | O que houve |", "|---|---|",
+        "| 404 | peca ou endereco que nao existe neste pacote |",
+        "| 400 | faltou campo no pedido |",
+        "| 500 | a peca quebrou ao carregar ou ao responder — veja `GET /status` |", "",
+        "## Ligar numa ferramenta pronta", "",
+        "**Open WebUI** — Configuracoes > Conexoes > OpenAI API:", "",
+        f"* URL base: `{base}/v1`", "* Chave: qualquer coisa (o roteador nao confere)", "",
+        "As pecas aparecem no seletor de modelo. Escolher `imagem` e mandar uma mensagem "
+        "devolve a imagem na conversa.", "",
+        "**Continue (VS Code)** — no `config.json`:", "",
+        "```json",
+        '{"models": [{"title": "meu modelo", "provider": "openai", "model": "texto",',
+        f'             "apiBase": "{base}/v1", "apiKey": "nao-precisa"}}]}}',
+        "```", "",
+        "**Cursor** aceita um endereco OpenAI, mas parte dos recursos dele passa pelos "
+        "servidores da Cursor, entao um endereco local pode nao bastar — isso e limitacao "
+        "da ferramenta, nao deste pacote.", "",
+        "## Escrever uma ferramenta em cima disto", "",
+        "```python", "from openai import OpenAI", "",
+        f'cliente = OpenAI(base_url="{base}/v1", api_key="nao-precisa")',
+        'r = cliente.chat.completions.create(model="texto",',
+        '                                    messages=[{"role": "user", "content": "..."}])',
+        "print(r.choices[0].message.content)", "```", "",
+        "A biblioteca oficial da OpenAI funciona sem adaptacao. `api_key` pode ser qualquer "
+        "coisa: o roteador nao confere.", "",
+    ]
     return "\n".join(linhas) + "\n"
 
 
@@ -676,6 +884,10 @@ def start_varios(ids: list[str], name: str = "", include_base: bool = False,
                 for pacote in PIP_POR_TIPO.get(item["tipo"], []):
                     if pacote not in pacotes:
                         pacotes.append(pacote)
+            _say("montando o roteador, os scripts de subida e a API.md")
+            para_servidor = [{**i, "modelo": (i.get("base_hf") if i["tipo"] == "texto" else None)
+                                             or i.get("modelo", "")} for i in escolhidos]
+            _monta_servidor(dest, para_servidor, pacotes)
             _say("montando o instalador do conjunto")
             linhas = "\n".join(
                 f'echo "  {i["tipo"]}: {i["id"]}"' for i in escolhidos)
@@ -693,9 +905,15 @@ def start_varios(ids: list[str], name: str = "", include_base: bool = False,
             (dest / "README.md").write_text(_readme_conjunto(escolhidos, name, sistema),
                                             encoding="utf-8")
             (dest / "pacote.json").write_text(json.dumps({
-                "conjunto": True, "itens": [
-                    {"tipo": i["tipo"], "id": i["id"], "modelo": i.get("modelo", ""),
-                     "detalhe": i.get("detalhe", "")} for i in escolhidos],
+                "conjunto": True, "roteador": {"arquivo": "roteador.py", "porta": 8770,
+                                               "doc": "API.md", "subir": "./subir.sh"},
+                "itens": [
+                    {"tipo": i["tipo"], "id": i["id"],
+                     # para o texto vale o modelo do Hugging Face: e nele que o adaptador roda
+                     "modelo": (i.get("base_hf") if i["tipo"] == "texto" else None)
+                               or i.get("modelo", ""),
+                     "detalhe": i.get("detalhe", ""),
+                     "onde": ONDE.get(i["tipo"], {})} for i in escolhidos],
                 "sistema": sistema, "pip": pacotes, "criado": _now(),
             }, ensure_ascii=False, indent=2), encoding="utf-8")
             _say(f"pacote montado ({_size(dest) / 1e6:.0f} MB)")

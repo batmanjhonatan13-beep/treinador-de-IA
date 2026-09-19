@@ -285,6 +285,46 @@ RHEL/Rocky/Alma/Fedora, **SUSE/openSUSE**, Arch, Alpine, macOS e Windows (winget
 
 ## Exportar
 
+### O pacote é um servidor: um endereço, vários modelos
+
+Os cinco treinos **não viram um modelo só** — são arquiteturas diferentes, cada uma em cima
+da sua base. O que o pacote leva é um **roteador** na frente delas:
+
+```bash
+./subir.sh                  # porta 8770
+./subir.sh --manter 0       # nada dorme (mais rápido, come memória)
+./subir.sh --acordar texto  # já sobe com o texto ligado
+```
+
+| Chamada | O que acontece |
+|---|---|
+| `GET /v1/models` | lista as peças do pacote |
+| `POST /v1/chat/completions` | formato da OpenAI — **qualquer ferramenta que fale com a OpenAI fala com isto** |
+| `POST /v1/images/generations` | PNG em base64 |
+| `POST /v1/audio/generations` | WAV em base64 |
+| `POST /v1/3d/generations` | `.glb` em base64 |
+| `POST /classificar` | categoria + certeza de cada uma |
+| `GET /status` · `POST /ligar` · `POST /desligar` | quem está ligado, e controle na mão |
+
+**Ligar e desligar sozinho:** a peça só carrega no primeiro pedido dela e dorme depois de
+`--manter` segundos parada. **Uma peça de GPU por vez** — antes de acordar uma, as outras
+saem da placa; numa máquina com uma placa só não cabe tudo junto, e é melhor o roteador
+decidir isso do que a sua ferramenta descobrir com um erro de memória.
+
+| Tipo | GPU | CPU |
+|---|---|---|
+| texto | recomendado (6 GB) | funciona, devagar |
+| imagem | **obrigatório** (6 GB) | não roda — difusão em CPU é inviável, não lenta |
+| som (estilo) | recomendado (4 GB) | funciona, muito devagar |
+| som (classificador) | opcional | funciona bem |
+| classificador de imagem | opcional | funciona bem |
+| 3D | **obrigatório** (6 GB) | não roda |
+
+Cada pacote sai com um **`API.md`** documentando cada chamada, com exemplo em `curl` e em
+Python — sem isso, quem recebe o pacote tem os modelos mas não sabe como pedir nada.
+
+O roteador **não tem senha**. Rede interna, ou um proxy com autenticação na frente.
+
 ### Vários conhecimentos num pacote só
 
 Marque tudo que vai para a mesma máquina — a doc que virou peso, o estilo de imagem, o som,
