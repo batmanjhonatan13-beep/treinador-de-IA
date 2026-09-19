@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>agente-pc — chat</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="wrap chat">
+    <nav>
+      <a href="/">Chat</a>
+      <a href="/arquivo.html">Arquivos</a>
+      <a href="/preparar.html">Preparar dados</a>
+      <a href="/treino.html">Treino</a>
+      <a href="/exportar.html">Exportar</a>
+      <a href="/ambiente.html">Ambiente</a>
+    </nav>
+    <header>
+      <div>
+        <h1>Chat</h1>
+        <div class="sub">Fala com o Qwen original. Escolha qual conhecimento consolidado ele usa (um por vez; para dois assuntos juntos, treine os dois arquivos juntos).</div>
+      </div>
+      <div class="controls">
+        <span id="pill" class="pill off">modelo desligado</span>
+        <span id="filePill" class="pill on">consulta on</span>
+        <select id="modelSel" aria-label="Conhecimento treinado do chat"></select>
+        <button id="modelUse" type="button">Usar este conhecimento</button>
+        <button id="onBtn" class="primary" type="button">Ativar modelo</button>
+        <button id="offBtn" class="danger" type="button">Desligar modelo</button>
+        <button id="fileToggle" type="button">Desativar consulta</button>
+        <button id="newChat" type="button">Nova conversa</button>
+      </div>
+    </header>
+    <div id="trainBanner" class="banner">Treino rodando. Acompanhe em <a href="/treino.html">Treino</a>.</div>
+    <div id="log"></div>
+    <form id="form" class="row">
+      <textarea id="q" rows="2" placeholder="Pergunte ao modelo local…" required></textarea>
+      <button id="send" class="primary" type="submit">Enviar</button>
+    </form>
+  </div>
+  <script src="/app.js"></script>
+  <script>
+    const log = document.getElementById("log");
+    const form = document.getElementById("form");
+    const q = document.getElementById("q");
+    let messages = [];
+
+    function clearChat(note) {
+      messages = [];
+      log.innerHTML = "";
+      if (note) appendLine("log", note);
+    }
+
+    function add(role, text) {
+      appendLine("log", text, "msg " + role);
+    }
+
+    document.getElementById("onBtn").onclick = async () => {
+      const btn = document.getElementById("onBtn");
+      btn.disabled = true;
+      add("sys", "Carregando pesos na memória…");
+      try {
+        paint(await api("/api/start", {}));
+        add("sys", "Modelo ligado. Pode perguntar. Desligar depois não apaga o arquivo.");
+      } catch (err) {
+        add("sys", "Erro ao ligar: " + err.message);
+      } finally {
+        btn.disabled = false;
+      }
+    };
+
+    document.getElementById("offBtn").onclick = async () => {
+      const btn = document.getElementById("offBtn");
+      btn.disabled = true;
+      add("sys", "Descarregando da RAM/VRAM…");
+      try {
+        paint(await api("/api/stop", {}));
+        add("sys", "Modelo desligado. Os pesos continuam no disco.");
+      } catch (err) {
+        add("sys", "Erro ao desligar: " + err.message);
+      } finally {
+        btn.disabled = false;
+      }
+    };
+
+    document.getElementById("fileToggle").onclick = () => {
+      setUseFile(!window.useFile);
+      if (window.useFile) {
+        add("sys", "Consulta LIGADA: ele lê o caderno.");
+      } else {
+        clearChat("Consulta DESLIGADA e histórico limpo. Agora só peso de fábrica + LoRA, se o LoRA estiver ligado.");
+      }
+      refresh();
+    };
+
+    document.getElementById("newChat").onclick = () => {
+      clearChat("Conversa zerada. Histórico não é peso.");
+      refresh();
+    };
+
+    form.onsubmit = async (ev) => {
+      ev.preventDefault();
+      const text = q.value.trim();
+      if (!text) return;
+      q.value = "";
+      add("you", text);
+      messages.push({ role: "user", content: text });
+      document.getElementById("send").disabled = true;
+      try {
+        const payload = window.useFile ? messages : [{ role: "user", content: text }];
+        const data = await api("/api/chat", {
+          messages: payload,
+          use_file: window.useFile,
+          use_lora: window.useLora,
+        });
+        messages.push({ role: "assistant", content: data.text });
+        add("bot", data.text);
+        paint(data);
+      } catch (err) {
+        add("sys", "Erro: " + err.message);
+      } finally {
+        document.getElementById("send").disabled = false;
+        q.focus();
+      }
+    };
+
+    add("sys", "Chat só conversa. Arquivo e treino ficam nos botões de cima.");
+    refresh().catch((err) => add("sys", err.message));
+    resumeTrainIfRunning().catch(() => {});
+    async function loadModels() {
+      const j = await api("/api/adapters");
+      const sel = document.getElementById("modelSel");
+      sel.innerHTML = "";
+      const add1 = (value, label) => {
+        const o = document.createElement("option");
+        o.value = value; o.textContent = label; sel.appendChild(o);
+      };
+      add1("none", "Só o Qwen original (sem conhecimento treinado)");
+      // so entra no chat o que passou a prova inteira sem consulta
+      // conhecimento treinado em outro modelo base nao entra: nao funciona nele
+      const prontos = j.items.filter((m) => m.consolidated && m.serve_no_modelo);
+      prontos.slice().reverse().forEach((m) => {
+        add1(m.id, "🟢 " + m.file + " · " + (m.facts || "?") + " linhas · " + (m.modelo || "?"));
+      });
+      sel.value = prontos.some((m) => m.id === j.active) ? j.active : "none";
+      document.getElementById("modelUse").disabled = !prontos.length;
+      if (!prontos.length) add1("", "nenhum conhecimento consolidado ainda");
+    }
+    document.getElementById("modelUse").onclick = async () => {
+      const id = document.getElementById("modelSel").value;
+      try {
+        await api("/api/adapter-use", { id });
+        add("sys", id === "none" ? "Chat só com o Qwen original." : "Conhecimento ativo trocado. Vale com a consulta ao arquivo desligada; a próxima resposta carrega o adaptador na GPU.");
+        await loadModels();
+        refresh();
+      } catch (err) { add("sys", "Erro ao trocar: " + err.message); }
+    };
+    loadModels().catch(() => {});
+  </script>
+</body>
+</html>

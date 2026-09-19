@@ -1,0 +1,15 @@
+# Nada do que a ferramenta gera entra no repositório: pesos, extrações, logs e cadernos
+# são dados da sua máquina. O repositório tem só o programa, a doc e o instalador.
+data/
+!data/conhecimento/.gitkeep
+
+.venv/
+.venv-train/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+*.gguf
+*.bin
+*.safetensors
+.DS_Store

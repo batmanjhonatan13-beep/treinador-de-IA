@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>agente-pc — preparar dados</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <nav>
+      <a href="/">Chat</a>
+      <a href="/arquivo.html">Arquivos</a>
+      <a href="/preparar.html">Preparar dados</a>
+      <a href="/treino.html">Treino</a>
+      <a href="/exportar.html">Exportar</a>
+      <a href="/ambiente.html">Ambiente</a>
+    </nav>
+    <header>
+      <div>
+        <h1>Preparar dados</h1>
+        <div class="sub">Cole dados soltos (anotações, conversa, lista…). O modelo local reescreve no formato que o treino entende, usando a skill abaixo. Você confere e salva.</div>
+      </div>
+    </header>
+
+    <section class="card">
+      <h2>1a. Puxar de um site (opcional)</h2>
+      <p class="note">Informe a raiz: o extrator anda a árvore inteira — cada aba, cada galho, blocos de código, imagens e os links que levam à doc de outras ferramentas. Ao terminar, ele já transforma tudo em fatos sozinho; o texto bruto fica no disco, você só confere o resultado. Pode parar quando quiser.</p>
+      <div class="grid2">
+        <input id="url" type="text" placeholder="https://docs.exemplo.com/" />
+        <input id="subject2" type="text" placeholder="Assunto (ex.: Docker)" />
+      </div>
+      <div class="grid2">
+        <label class="sub">Páginas (0 = tudo) <input id="pages" type="number" value="0" min="0" /></label>
+        <label class="sub"><input id="browser" type="checkbox" checked /> usar navegador (pega JavaScript)</label>
+        <label class="sub"><input id="imgs" type="checkbox" checked /> ler as imagens (modelo de visão)</label>
+        <label class="sub"><input id="externos" type="checkbox" checked /> seguir links para outras docs (1 nível)</label>
+      </div>
+      <div class="controls">
+        <button id="crawlBtn" type="button">Extrair site</button>
+        <button id="crawlStop" class="danger" type="button" disabled>Parar extração</button>
+        <span id="crawlSpin" class="spin" aria-hidden="true"></span>
+        <span id="crawlNote" class="note"></span>
+      </div>
+      <div id="crawlBar" class="bar"><span></span></div>
+      <div id="crawlLog"></div>
+    </section>
+
+    <section class="card">
+      <h2>1b. Colar dados à mão <span class="sub">(só se você não extraiu um site)</span></h2>
+      <p class="note" id="srcNote"></p>
+      <input id="subject" type="text" placeholder="Sobre quem/o quê são os dados? (ex.: Jhonatan, o jogo A Vingança da Ira)" />
+      <textarea id="raw" class="big" placeholder="Cole aqui qualquer texto. Até 60 mil caracteres."></textarea>
+      <div class="controls">
+        <button id="fmtBtn" class="primary" type="button">Formatar para treino</button>
+        <span id="spin" class="spin" aria-hidden="true"></span>
+        <span id="fmtNote" class="note"></span>
+      </div>
+      <div id="fmtBar" class="bar"><span></span></div>
+    </section>
+
+    <section class="card">
+      <h2>2. Fatos prontos para treinar <span class="sub">(edite à vontade)</span></h2>
+      <textarea id="out" class="big" placeholder="O resultado aparece aqui."></textarea>
+      <div class="controls">
+        <button id="lintBtn" type="button">Conferir</button>
+        <button id="fmtStop" class="danger" type="button">Parar formatação</button>
+        <input id="fname" type="text" placeholder="nome-do-arquivo.md" />
+        <button id="saveBtn" class="primary" type="button">Salvar no caderno</button>
+      </div>
+      <ul id="warns" class="files"></ul>
+      <p id="saveNote" class="note"></p>
+    </section>
+
+    <section class="card">
+      <h2>Skill usada na formatação</h2>
+      <p class="note">Este arquivo (<code id="skillFile"></code>) é o que o modelo consulta para montar o arquivo de treino. Pode abrir e ajustar as regras.</p>
+      <pre id="skill" class="skill"></pre>
+    </section>
+  </div>
+  <script src="/app.js"></script>
+  <script>
+    const raw = document.getElementById("raw"), out = document.getElementById("out");
+    let sourceFile = "";
+    let bigFile = "";
+    let autoFmt = false;
+    const fmtNote = document.getElementById("fmtNote"), warns = document.getElementById("warns");
+    let poll = null;
+
+    async function lint() {
+      const r = await api("/api/lint", { text: out.value });
+      warns.innerHTML = "";
+      (r.warnings.length ? r.warnings : ["Nenhum aviso. Formato bom para treinar."]).forEach((w) => {
+        const li = document.createElement("li"); li.textContent = w; warns.appendChild(li);
+      });
+    }
+
+    async function watch() {
+      const j = await api("/api/format-job");
+      const fb = document.getElementById("fmtBar");
+      fb.classList.toggle("on", j.total > 0);
+      fb.classList.toggle("good", j.state === "done");
+      fb.firstElementChild.style.width = j.total ? Math.round((j.done / j.total) * 100) + "%" : "0%";
+      out.value = j.text || out.value;
+      bigFile = j.big ? j.file : "";
+      fmtNote.textContent = (j.state === "running" || j.state === "parando" || j.state === "comandos")
+        ? (j.state === "comandos" ? "Conferindo comandos · " : "Lote " + j.done + "/" + j.total + " · ") + j.facts + " fatos até agora" + (j.state === "parando" ? " (parando…)" : "") : j.state === "error" ? "Erro: " + j.error : j.state === "done"
+          ? j.facts + " fatos" + (j.cmds && j.cmds[0] ? ", comandos cobertos " + j.cmds[1] + "/" + j.cmds[0] : "") + (j.invented ? ", " + j.invented + " invenções barradas" : "") + (j.skipped ? ", " + j.skipped + " lote(s) pulados" : "") + (j.dropped ? ", " + j.dropped + " sensíveis descartados" : "") + (j.copied ? ", " + j.copied + " cópias do exemplo bloqueadas" : "") + (j.big ? ". Arquivo grande: o campo mostra o começo e o salvar usa o arquivo inteiro." : ". Confira e salve.")
+          : "";
+      if (j.state !== "running" && j.state !== "parando" && j.state !== "comandos") {
+        clearInterval(poll); poll = null; setSpin(false);
+        document.getElementById("fmtBtn").disabled = false;
+        if (j.state === "done") lint();
+      }
+    }
+
+    async function startFormat() {
+      const r = await api("/api/format", {
+        raw: sourceFile ? "" : raw.value,
+        source_file: sourceFile,
+        subject: document.getElementById("subject").value,
+      });
+      if (!r.accepted) { fmtNote.textContent = r.reason; return; }
+      setSpin(true);
+      document.getElementById("fmtBtn").disabled = true;
+      if (!poll) poll = setInterval(() => watch().catch((e) => { fmtNote.textContent = e.message; }), 2000);
+    }
+    document.getElementById("fmtBtn").onclick = () => startFormat();
+
+    document.getElementById("lintBtn").onclick = () => lint();
+    document.getElementById("fmtStop").onclick = () => api("/api/format-stop", {}).then(watch);
+
+    document.getElementById("saveBtn").onclick = async () => {
+      let name = document.getElementById("fname").value.trim() || "dados.md";
+      if (!/\.(md|txt)$/i.test(name)) name += ".md";
+      try {
+        const r = await api("/api/knowledge", { name, text: out.value, from_file: bigFile });
+        document.getElementById("saveNote").textContent = "Salvo em " + r.file + ". Agora escolha esse arquivo na página Treino.";
+      } catch (e) { document.getElementById("saveNote").textContent = "Erro: " + e.message; }
+    };
+
+    let crawlPoll = null;
+
+    async function watchCrawl() {
+      const j = await api("/api/crawl-job");
+      const running = j.state === "running";
+      document.getElementById("crawlSpin").classList.toggle("on", running);
+      document.getElementById("crawlBtn").disabled = running;
+      document.getElementById("crawlStop").disabled = !running;
+      document.getElementById("crawlNote").textContent =
+        j.pages ? j.pages + " página(s) · fila " + j.queue + " · " + Math.round(j.chars / 1000) + " mil caracteres" + (j.images ? " · " + j.images + " imagem(ns)" : "") : "";
+      const cb = document.getElementById("crawlBar");
+      cb.classList.toggle("on", running || !!j.pages);
+      cb.firstElementChild.style.width = j.target
+        ? Math.min(100, (j.pages / j.target) * 100) + "%"
+        : (j.pages ? Math.min(95, (j.pages / (j.pages + j.queue)) * 100) + "%" : "0%");
+      const box = document.getElementById("crawlLog");
+      box.innerHTML = "";
+      (j.lines || []).slice(-8).forEach((l) => appendLine("crawlLog", l, "msg sys" + (/erro/.test(l) ? " bad" : "")));
+      if (!running) {
+        clearInterval(crawlPoll); crawlPoll = null;
+        if (j.file && j.pages) {
+          sourceFile = j.file;
+          document.getElementById("srcNote").textContent =
+            "Extração pronta: " + j.pages + " página(s)" + (j.externas ? " (" + j.externas + " de outras docs)" : "") +
+            ", " + Math.round(j.chars / 1000) + " mil caracteres, " + j.images + " imagem(ns). Arquivo: " + j.file;
+          const alvo = document.getElementById("subject2").value.trim();
+          if (alvo) document.getElementById("subject").value = alvo;
+          const fj = await api("/api/format-job");
+          if (fj.state !== "running" && fj.state !== "comandos" && !autoFmt) {
+            autoFmt = true;
+            fmtNote.textContent = "Extração concluída. Formatando em lotes…";
+            await startFormat();
+          }
+        }
+      }
+    }
+
+    document.getElementById("crawlBtn").onclick = async () => {
+      autoFmt = false;
+      const r = await api("/api/crawl", {
+        url: document.getElementById("url").value,
+        pages: document.getElementById("pages").value,
+        browser: document.getElementById("browser").checked,
+        images: document.getElementById("imgs").checked,
+        externos: document.getElementById("externos").checked,
+      });
+      if (!r.accepted) { document.getElementById("crawlNote").textContent = r.reason; return; }
+      if (!crawlPoll) crawlPoll = setInterval(() => watchCrawl().catch(() => {}), 2000);
+      watchCrawl();
+    };
+    document.getElementById("crawlStop").onclick = () => api("/api/crawl-stop", {}).then(watchCrawl);
+    watchCrawl().catch(() => {});
+
+    api("/api/format-job").then((j) => {
+      document.getElementById("skill").textContent = j.skill;
+      document.getElementById("skillFile").textContent = j.skill_file;
+    });
+  </script>
+</body>
+</html>

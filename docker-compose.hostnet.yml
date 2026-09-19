@@ -1,0 +1,10 @@
+# Overlay para daemon sem iptables (Docker rootless no WSL, por exemplo): sem bridge,
+# o container usa a rede do host. Nesse modo a porta nao e publicada, e a mesma do host.
+#   docker compose -f docker-compose.yml -f docker-compose.hostnet.yml up -d
+services:
+  web:
+    network_mode: host
+    ports: !reset []
+    extra_hosts: !reset []
+    environment:
+      OLLAMA_HOST: ${OLLAMA_HOST:-127.0.0.1:11434}

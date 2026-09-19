@@ -1,0 +1,19 @@
+services:
+  web:
+    build:
+      context: .
+      network: host
+    restart: unless-stopped
+    ports:
+      - "${PORTA:-8765}:8765"
+    # o Ollama roda no host (e quem tem a GPU); o container fala com ele por aqui
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      OLLAMA_HOST: ${OLLAMA_HOST:-host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:3b}
+    volumes:
+      - ./data:/app/data
+      - ./web:/app/web
+      - ./src:/app/src
+      - ./config.yaml:/app/config.yaml

@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>agente-pc — preparar ambiente</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <nav>
+      <a href="/">Chat</a>
+      <a href="/arquivo.html">Arquivos</a>
+      <a href="/preparar.html">Preparar dados</a>
+      <a href="/treino.html">Treino</a>
+      <a href="/exportar.html">Exportar</a>
+      <a href="/ambiente.html">Ambiente</a>
+    </nav>
+    <header>
+      <div>
+        <h1>Preparar ambiente</h1>
+        <div class="sub">Instala modelo, Ollama e o que o treino precisa — nesta máquina ou em outro servidor por SSH. Ele olha o sistema, monta o script e só roda quando você mandar.</div>
+      </div>
+    </header>
+
+    <section class="card">
+      <h2>Estado da conexão <span class="sub">(atualiza sozinho)</span></h2>
+      <p id="resumo" class="note">verificando…</p>
+      <ul id="itens" class="runs"></ul>
+    </section>
+
+    <section class="card">
+      <h2>Modelos <span class="sub">(o que cabe nesta máquina)</span></h2>
+      <p class="note">“treina na memória” = LoRA sem placa de vídeo; é mais lento, mas funciona. Os outros precisam de GPU para treinar.</p>
+      <ul id="modelos" class="runs"></ul>
+    </section>
+
+    <section class="card">
+      <h2>Onde instalar</h2>
+      <div class="grid2">
+        <input id="destino" type="text" placeholder="usuario@servidor (vazio = esta máquina)" />
+        <input id="porta_ssh" type="number" value="22" title="porta SSH" />
+        <input id="chave" type="text" placeholder="~/.ssh/id_rsa (opcional)" />
+        <input id="destino_dir" type="text" placeholder="pasta no destino (padrão: ~/agente-pc)" />
+      </div>
+      <p class="note">Por SSH é preciso chave configurada — senha interativa não funciona. A primeira conexão aceita a chave do servidor automaticamente.</p>
+    </section>
+
+    <section class="card">
+      <h2>O que instalar</h2>
+      <div class="grid2">
+        <label class="sub"><input id="basico" type="checkbox" checked /> básico (python, compilador C, curl, git)</label>
+        <label class="sub"><input id="ollama" type="checkbox" checked /> Ollama</label>
+        <label class="sub"><input id="modelo" type="checkbox" checked /> baixar o modelo base</label>
+        <label class="sub"><input id="treino" type="checkbox" checked /> ambiente de treino (torch, peft, trl)</label>
+        <label class="sub"><input id="enviar_projeto" type="checkbox" /> enviar o código do projeto (só SSH)</label>
+        <label class="sub">Sistema <select id="sistema"><option value="">detectar sozinho</option></select></label>
+      </div>
+      <p class="note">Sem compilador C o torch quebra na primeira passada de treino — por isso ele entra no básico. O Docker e a página já vieram pelo <code>instalar.sh</code>.</p>
+      <div class="controls">
+        <button id="verBtn" type="button">Ver o script</button>
+        <button id="localBtn" class="primary" type="button">Instalar aqui</button>
+        <button id="goBtn" type="button">Instalar no servidor (SSH)</button>
+        <span id="spin" class="spin" aria-hidden="true"></span>
+        <span id="nota" class="note"></span>
+      </div>
+    </section>
+
+    <section class="card" id="scriptCard" style="display:none">
+      <h2>Script que vai rodar</h2>
+      <pre id="script" class="skill"></pre>
+    </section>
+
+    <section class="card">
+      <h2>Saída</h2>
+      <div id="log"></div>
+      <div id="depois" style="display:none">
+        <p class="note">Servidor pronto. Para o chat desta página usar o Ollama de lá:</p>
+        <div class="controls">
+          <input id="ohost" type="text" placeholder="ip-do-servidor:11434" />
+          <button id="apontar" type="button">Usar o Ollama desse servidor</button>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script src="/app.js"></script>
+  <script>
+    let poll = null;
+
+    function opcoes(executar, local) {
+      const v = (id) => document.getElementById(id).value.trim();
+      const c = (id) => document.getElementById(id).checked;
+      return {
+        destino: local ? "" : v("destino"), porta_ssh: v("porta_ssh"), chave: v("chave"),
+        destino_dir: v("destino_dir"), sistema: v("sistema"),
+        basico: c("basico"), ollama: c("ollama"), modelo: c("modelo"),
+        treino: c("treino"), enviar_projeto: !local && c("enviar_projeto"),
+        executar,
+      };
+    }
+
+    async function watch() {
+      const j = await api("/api/prepare-job");
+      const rodando = j.state === "running";
+      document.getElementById("spin").classList.toggle("on", rodando);
+      document.getElementById("goBtn").disabled = rodando;
+      document.getElementById("verBtn").disabled = rodando;
+      const box = document.getElementById("log");
+      box.innerHTML = "";
+      (j.lines || []).forEach((l) => appendLine("log", "[" + fmtTime(l.ts) + "] " + l.msg, "msg sys" + (/erro|falh/i.test(l.msg) ? " bad" : "")));
+      if (j.script) {
+        document.getElementById("scriptCard").style.display = "";
+        document.getElementById("script").textContent = j.script;
+      }
+      document.getElementById("nota").textContent =
+        { running: "rodando…", pronto: "script pronto — confira e clique em Executar", done: "concluído", error: "falhou" }[j.state] || "";
+      const ok = j.state === "done" && (j.info || {}).ollama !== undefined;
+      document.getElementById("depois").style.display = ok && document.getElementById("destino").value.trim() ? "" : "none";
+      if (!rodando && poll) { clearInterval(poll); poll = null; }
+    }
+
+    async function disparar(executar, local) {
+      const onde = local ? "ESTA máquina" : (document.getElementById("destino").value.trim() || "ESTA máquina");
+      if (executar && !confirm("Instalar em " + onde + "?\n\nEle instala pacotes do sistema e pode pedir sudo.")) return;
+      if (executar && !local && !document.getElementById("destino").value.trim()) {
+        document.getElementById("nota").textContent = "informe usuario@servidor, ou use 'Instalar aqui'";
+        return;
+      }
+      const r = await api("/api/prepare", opcoes(executar, local));
+      if (!r.accepted) { document.getElementById("nota").textContent = r.reason; return; }
+      if (!poll) poll = setInterval(() => watch().catch(() => {}), 1500);
+      watch();
+    }
+
+    document.getElementById("verBtn").onclick = () => disparar(false, !document.getElementById("destino").value.trim());
+    document.getElementById("localBtn").onclick = () => disparar(true, true);
+    document.getElementById("goBtn").onclick = () => disparar(true, false);
+    api("/api/sistemas").then((s) => {
+      const sel = document.getElementById("sistema");
+      s.itens.forEach((i) => { const o = document.createElement("option"); o.value = i.id; o.textContent = i.nome; sel.appendChild(o); });
+    });
+    document.getElementById("apontar").onclick = async () => {
+      const r = await api("/api/prepare-ollama", { host: document.getElementById("ohost").value });
+      appendLine("log", "chat passou a usar o Ollama em " + r.ollama_host + " (reinicie a página do servidor para valer)");
+    };
+    const ICONE = { ok: "✅", falta: "⛔", aviso: "⚠️" };
+
+    async function saude() {
+      const h = await api("/api/health");
+      document.getElementById("resumo").textContent =
+        (h.conectado ? "Tudo conectado. " : "Não conectado. ") + h.resumo +
+        " · Ollama em " + h.ollama_host + (h.remoto ? " (outro servidor)" : " (local)") +
+        " · modo " + h.device;
+      const ul = document.getElementById("itens");
+      ul.innerHTML = "";
+      h.itens.forEach((i) => {
+        const li = document.createElement("li");
+        const txt = document.createElement("div");
+        txt.innerHTML = "";
+        txt.textContent = (ICONE[i.estado] || "") + " " + i.titulo + " — " + i.detalhe;
+        li.appendChild(txt);
+        if (i.acao) {
+          const a = document.createElement("span");
+          a.className = "note";
+          a.textContent = i.acao;
+          li.appendChild(a);
+        }
+        ul.appendChild(li);
+      });
+      const ml = document.getElementById("modelos");
+      ml.innerHTML = "";
+      (h.modelos || []).forEach((m) => {
+        const li = document.createElement("li");
+        const info = document.createElement("div");
+        info.textContent = (m.ativo ? "★ " : "") + m.name + " · " + m.params +
+          " · RAM " + m.ram_gb + " GB" + (m.vram_gb ? " · VRAM " + m.vram_gb + " GB" : "") +
+          (m.sem_gpu ? " · treina na memória" : " · treino exige GPU") +
+          " · " + m.roda_aqui;
+        const nota = document.createElement("div");
+        nota.className = "note";
+        nota.textContent = m.nota + " · " + m.licenca +
+          (m.baixado_ollama ? " · baixado" : " · não baixado") +
+          (m.baixado_treino ? " · pesos de treino no cache" : "");
+        const bloco = document.createElement("div");
+        bloco.append(info, nota);
+        li.appendChild(bloco);
+        if (!m.ativo) {
+          const b = document.createElement("button");
+          b.className = "small"; b.type = "button"; b.textContent = "Usar este";
+          b.onclick = async () => {
+            if (!confirm("Trocar o modelo para " + m.name + "?\n\nO conhecimento já treinado foi feito sobre o modelo atual e não serve para outro.")) return;
+            await api("/api/use-model", { id: m.id });
+            saude();
+          };
+          li.appendChild(b);
+        }
+        ml.appendChild(li);
+      });
+    }
+    saude().catch((e) => { document.getElementById("resumo").textContent = "erro: " + e.message; });
+    setInterval(() => saude().catch(() => {}), 20000);
+
+    watch().catch((e) => appendLine("log", e.message));
+  </script>
+</body>
+</html>

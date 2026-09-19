@@ -1,0 +1,123 @@
+# Camada 1: cérebro. Trocar o arquivo não apaga a memória em disco.
+model:
+  name: qwen2.5:3b
+  ollama_host: 127.0.0.1:11434
+  base_hf: Qwen/Qwen2.5-3B-Instruct
+  # auto = GPU quando houver, senão CPU. cpu força memória (lento, mas funciona).
+  device: auto
+
+# Catálogo: o que dá para usar e o que cada um exige. "sem_gpu" treina só na memória.
+modelos:
+  - id: smollm2-135m
+    name: smollm2:135m
+    base_hf: HuggingFaceTB/SmolLM2-135M-Instruct
+    params: 135M
+    sem_gpu: true
+    ram_gb: 3
+    vram_gb: 0
+    licenca: Apache-2.0
+    nota: Treina na memória de qualquer PC. Decora fato curto; conversa fraca.
+  - id: smollm2-360m
+    name: smollm2:360m
+    base_hf: HuggingFaceTB/SmolLM2-360M-Instruct
+    params: 360M
+    sem_gpu: true
+    ram_gb: 5
+    vram_gb: 0
+    licenca: Apache-2.0
+    nota: Menor que aguenta um caderno de fatos sem GPU.
+  - id: qwen-0_5b
+    name: qwen2.5:0.5b
+    base_hf: Qwen/Qwen2.5-0.5B-Instruct
+    params: 0.5B
+    sem_gpu: true
+    ram_gb: 6
+    vram_gb: 2
+    licenca: Apache-2.0
+    nota: Treina na memória; com GPU fica bem mais rápido.
+  - id: qwen-1_5b
+    name: qwen2.5:1.5b
+    base_hf: Qwen/Qwen2.5-1.5B-Instruct
+    params: 1.5B
+    sem_gpu: true
+    ram_gb: 12
+    vram_gb: 4
+    licenca: Apache-2.0
+    nota: Na memória é lento (dezenas de minutos por rodada). Com 4 GB de VRAM, tranquilo.
+  - id: qwen-3b
+    name: qwen2.5:3b
+    base_hf: Qwen/Qwen2.5-3B-Instruct
+    params: 3B
+    sem_gpu: false
+    ram_gb: 24
+    vram_gb: 8
+    licenca: Apache-2.0
+    nota: O equilíbrio usado aqui. Treina em 4 bits numa placa de 8 GB.
+  - id: qwen-7b
+    name: qwen2.5:7b
+    base_hf: Qwen/Qwen2.5-7B-Instruct
+    params: 7B
+    sem_gpu: false
+    ram_gb: 48
+    vram_gb: 14
+    licenca: Apache-2.0
+    nota: Melhor texto. Treino em 4 bits exige 12 GB de VRAM e paciência.
+
+# Camada 2: caderno. Qualquer sucesso vai pra cá NA HORA.
+memory:
+  machine_file: data/machine.md
+  profile_file: data/sobre-mim.md
+  knowledge_dir: data/conhecimento
+  procedures_dir: data/procedimentos
+  macros_dir: data/macros
+
+capture:
+  # Grava o desktop do Windows (Chrome, Explorer). Nao o terminal do WSL.
+  backend: windows
+  stop_key: F8
+  pause_key: F9
+  cancel_key: F10
+  move_min_px: 4
+
+# Camada 3: pesos. Só sobe se o lote passar no filtro.
+promote:
+  episodes_file: data/episodes.jsonl
+  dataset_file: data/datasets/sft.jsonl
+  adapter_dir: data/adapters/latest
+  # Um "abriu o Chrome" NÃO vira treino. Precisa de variedade.
+  min_episodes: 30
+  min_distinct_skills: 8
+  # Fatos de máquina (path, exe) não devem ir pro peso: mudam de PC.
+  never_bake:
+    - caminho absoluto
+    - executavel do windows
+    - senha
+    - token
+
+learn:
+  min_facts: 5
+  # 0 = sem teto: so para quando a prova inteira passa (ou no botao Parar)
+  max_rounds: 0
+  max_questions: 40
+  # rodadas seguidas por passada (cada passada salva; parar so perde a passada em curso)
+  chunk_rounds: 6
+  # consolidado = N tentativas seguidas que acertam tudo ja na primeira prova
+  streak: 3
+  probe_batch: 8
+  # extrator de documentacao
+  crawl_delay: 0.5
+  vision_model: qwen2.5vl:3b
+  history_file: data/treinos.jsonl
+
+train:
+  lora_r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  # Atencao move informacao; a MLP e onde o fato fica guardado. So com q/k/v/o o
+  # modelo precisava de muito mais rodadas para fixar um nome.
+  target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+  max_seq_len: 512
+  epochs: 2
+  batch_size: 4
+  grad_accum: 1
+  learning_rate: 2.0e-4

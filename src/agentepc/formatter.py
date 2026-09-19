@@ -1,0 +1,328 @@
+from __future__ import annotations
+
+import re
+import threading
+import time
+from pathlib import Path
+
+from agentepc import ollama
+from agentepc.config import load, resolve
+
+DEFAULT_SKILL = """# Skill: montar arquivo de treino e de consulta
+
+Voce transforma dados brutos em linhas de fatos. O MESMO arquivo serve para dois usos:
+- consulta: o chat le o arquivo inteiro no prompt, entao linhas curtas e sem repeticao cabem melhor;
+- treino: cada linha vira pergunta e resposta para o LoRA, entao cada linha precisa ser um fato completo.
+
+## Regras
+1. Saida: SO linhas que comecam com "- ". Uma informacao por linha. Nada de titulo, explicacao ou comentario.
+2. Frase completa e curta (ate 25 palavras), com o sujeito escrito em TODA linha (nome proprio), em terceira pessoa.
+3. Nunca use "eu", "meu", "minha", "nosso". Troque pelo nome do sujeito.
+4. Dado com rotulo vira "Rotulo: valor". Nome ou parentesco vira "A mae de Fulano se chama Maria" (sempre "O/A <parentesco> de <sujeito> se chama <nome>").
+   Sobrenome NAO e parente: "eu me chamo Ana Lima" vira "O nome completo de Ana e Ana Lima".
+5. Nao invente nada e nao complete o que falta. So o que esta no texto.
+6. Ignore senha, token, chave de API, cartao, CPF e caminhos absolutos.
+7. NUNCA repita as linhas dos exemplos desta skill. So vale o que esta no Trecho.
+8. Extraia TODOS os fatos do trecho, ate os obvios. Titulo com uma frase de explicacao ja e fato.
+9. "SEM FATOS" so quando o trecho inteiro for menu, indice, cookie ou rodape. Na duvida, extraia.
+
+## Documentacao tecnica
+- Comando, flag e caminho vao COPIADOS, sem traduzir: "- O comando `docker run -d` sobe o container em segundo plano".
+- Uma linha por comando, flag ou conceito. Nao resuma a pagina inteira numa linha.
+- O sujeito e a ferramenta ("Docker", "o comando docker ps"), nao "voce" nem "o usuario".
+- GUARDE O CONTEXTO na propria linha: sistema operacional, versao, distribuicao. Uma doc fala
+  de Windows, Mac e Linux na mesma pagina; sem isso o fato fica errado.
+  Ex.: "- No Windows, o Docker Desktop exige o WSL 2 habilitado".
+- Se a pagina fala de outra ferramenta junto, o fato pode ser sobre ela; escreva o nome dela.
+- Linha que comeca com "[imagem]" descreve uma figura: vire fato do que a figura ensina.
+- Ignore menu, indice, rodape, "edite esta pagina", cookies e link de navegacao.
+
+## Exemplo
+Sujeito: Ana
+Texto: eu moro em Recife e meu cachorro e o Rex
+Linhas:
+- Ana mora em Recife
+- O cachorro de Ana se chama Rex
+
+Sujeito: Ana
+Texto: me chamo Ana Lima, minha mae e a Rita, tenho um irmao, o Caio. Nasci em Natal.
+Linhas:
+- O nome completo de Ana e Ana Lima
+- A mae de Ana se chama Rita
+- O irmao de Ana se chama Caio
+- Ana nasceu em Natal
+
+Sujeito: Docker
+Texto: - Guides\n- Manuals\n## Install Docker\nGet Docker Desktop or Docker Engine for your operating system.\n### docker ps\nLista os containers em execucao. Com -a mostra tambem os parados.
+Linhas:
+- O Docker Desktop e o Docker Engine sao as formas de instalar o Docker
+- O comando `docker ps` lista os containers em execucao
+- O comando `docker ps -a` lista tambem os containers parados
+"""
+
+_job: dict = {"state": "idle", "done": 0, "total": 0, "text": "", "error": "", "dropped": 0,
+              "copied": 0, "facts": 0, "file": "", "big": False, "skipped": 0, "last_error": "", "cmds": [0, 0], "invented": 0}
+
+
+def skill_path():
+    path = resolve("data/skills/formato-de-treino.md")
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(DEFAULT_SKILL, encoding="utf-8")
+    return path
+
+
+def _norm(text: str) -> str:
+    import unicodedata
+
+    text = unicodedata.normalize("NFD", (text or "").lower())
+    text = "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
+    return re.sub(r"[^a-z0-9`]+", " ", text).strip()
+
+
+# Tokens que nao mudam quando o modelo traduz: comandos, nomes proprios, versoes, siglas.
+_DISTINTO = re.compile(
+    r"`[^`]+`"                              # comando
+    r"|\b[A-Z][\w.-]*[A-Z\d][\w.-]*\b"      # sigla ou CamelCase: WSL, Hyper-V, VMM
+    r"|\b[\w.-]*\d[\w.-]*\b"                # versao ou numero: 2022, v2, 24.04
+    r"|\b[A-Z][a-z]{2,}\b"                   # nome proprio: Docker, Kubernetes, Windows
+)
+_IGNORA = {"Uma", "Para", "Com", "Sem", "Por", "Nao", "Não", "Quando", "Depois", "Antes",
+           "Este", "Esta", "Esse", "Essa", "Cada", "Todo", "Toda", "Onde", "Como", "Use"}
+
+
+def grounded(line: str, fonte: str) -> bool:
+    """O fato tem que estar NO TEXTO.
+
+    A doc costuma estar em ingles e o fato sai em portugues, entao comparar palavra a
+    palavra derrubaria traducao boa. O que se compara e o que sobrevive a traducao:
+    comando entre crases, nome proprio, sigla e versao. Foi assim que apareceu o
+    `docker build` numa pagina de instalacao que nao citava esse comando.
+    """
+    n_fonte = _norm(fonte)
+    marcas = []
+    for m in _DISTINTO.finditer(line):
+        bruto = m.group(0).strip("`")
+        if bruto in _IGNORA or len(bruto) < 2:
+            continue
+        marcas.append(bruto)
+    for marca in marcas:
+        if _norm(marca) and _norm(marca) not in n_fonte:
+            return False
+    if marcas:
+        return True
+    # sem nada distintivo, sobra a comparacao por palavras
+    palavras = {w for w in _norm(line).split() if len(w) >= 5}
+    if not palavras:
+        return False
+    return sum(1 for w in palavras if w in n_fonte) / len(palavras) >= 0.5
+
+
+def is_secret(line: str) -> bool:
+    low = line.lower()
+    never = (load().get("promote") or {}).get("never_bake") or []
+    return any(tag in low for tag in never) or bool(
+        re.search(r"\b(password|api[_ ]?key|secret|cpf|cartao|cartão)\b", low)
+    )
+
+
+def lint(text: str) -> list[str]:
+    """Avisos para o usuario ajustar antes de treinar. Nao bloqueia."""
+    out: list[str] = []
+    seen: set[str] = set()
+    facts = 0
+    for n, raw in enumerate(text.splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        low = line.lower()
+        if is_secret(line):
+            out.append(f"linha {n}: parece segredo/dado sensivel; sera ignorada no treino")
+        if not line.startswith("- "):
+            out.append(f"linha {n}: nao comeca com '- ' (o treino le fatos por linha)")
+            continue
+        facts += 1
+        body = line[2:]
+        if re.search(r"\b(eu|meu|minha|meus|minhas|nosso|nossa)\b", body.lower()):
+            out.append(f"linha {n}: primeira pessoa; troque pelo nome (o modelo se confunde)")
+        if len(body.split()) < 3:
+            out.append(f"linha {n}: muito curta, sem sujeito claro")
+        if len(body.split()) > 40:
+            out.append(f"linha {n}: muito longa; quebre em fatos menores")
+        if low in seen:
+            out.append(f"linha {n}: repetida")
+        seen.add(low)
+    if facts < int((load().get("learn") or {}).get("min_facts") or 5):
+        out.append(f"so {facts} fato(s); o treino pede pelo menos {(load().get('learn') or {}).get('min_facts', 5)}")
+    return out
+
+
+def _chunks(raw: str, size: int = 1200) -> list[str]:
+    parts, cur = [], ""
+    for para in re.split(r"\n\s*\n|\n", raw):
+        para = para.strip()
+        if not para:
+            continue
+        if cur and len(cur) + len(para) > size:
+            parts.append(cur)
+            cur = ""
+        cur = (cur + "\n" + para).strip()
+    if cur:
+        parts.append(cur)
+    return parts
+
+
+def status() -> dict:
+    return {**_job, "skill": skill_path().read_text(encoding="utf-8"), "skill_file": "data/skills/formato-de-treino.md"}
+
+
+def stop() -> dict:
+    if _job["state"] in ("running", "comandos"):
+        _job["state"] = "parando"
+    return status()
+
+
+PREVIEW_MAX = 40000  # acima disso a pagina mostra amostra e salva direto do disco
+
+
+def start(raw: str = "", subject: str = "", source_file: str = "") -> dict:
+    """Texto colado ou arquivo de extracao. Arquivo grande e lido em lotes, do disco."""
+    if _job["state"] in ("running", "parando", "comandos"):
+        return {"accepted": False, "reason": "ja formatando"}
+    if source_file:
+        path = Path(source_file)
+        if not path.is_absolute():
+            path = resolve(source_file)
+        if not path.exists():
+            return {"accepted": False, "reason": "arquivo de extracao nao encontrado"}
+        raw = path.read_text(encoding="utf-8", errors="replace")
+    raw = (raw or "").strip()
+    if not raw:
+        return {"accepted": False, "reason": "cole os dados ou extraia um site antes"}
+    subject = (subject or "").strip() or "(descubra no texto quem e o sujeito principal e escreva o nome dele em toda linha)"
+    chunks = _chunks(raw)
+    out_path = resolve("data/extracoes") / (
+        (Path(source_file).stem + "-fatos.md") if source_file else f"colado-{int(time.time())}-fatos.md"
+    )
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    cabecalho = f"# Fatos{(' sobre ' + subject) if not subject.startswith('(') else ''}\n\n"
+    out_path.write_text(cabecalho, encoding="utf-8")
+    _job.update({"state": "running", "done": 0, "total": len(chunks), "text": "", "error": "",
+                 "dropped": 0, "copied": 0, "facts": 0, "file": str(out_path), "big": False,
+                 "skipped": 0, "last_error": "", "cmds": [0, 0], "invented": 0})
+    skill = skill_path().read_text(encoding="utf-8")
+    # o modelo pequeno as vezes copia a resposta do exemplo; essas linhas nao vieram do texto
+    exemplos = {_norm(ln) for ln in skill.splitlines() if ln.strip().startswith("- ")}
+
+    def _ask(chunk: str, insistir: bool) -> str:
+        pedido = f"Sujeito: {subject}\nTexto: {chunk}\nLinhas:"
+        if insistir:
+            pedido = (
+                "Este trecho TEM fatos. Extraia pelo menos um por titulo ou comando. Nao responda SEM FATOS.\n"
+                + pedido
+            )
+        data = ollama.request(
+            "/api/chat",
+            {
+                "model": ollama.base_name(),
+                "stream": False,
+                "keep_alive": "10m",
+                # sem teto o modelo pequeno as vezes entra em loop e estoura o tempo do lote
+                "options": {"temperature": 0, "num_predict": 400},
+                "messages": [
+                    {"role": "system", "content": skill},
+                    {"role": "user", "content": pedido},
+                ],
+            },
+            timeout=300,
+        )
+        return (data.get("message") or {}).get("content") or ""
+
+    def _ask_safe(chunk: str, insistir: bool) -> str:
+        """Um lote problematico e pulado; num site inteiro isso nao pode perder o resto."""
+        for tentativa in (1, 2):
+            try:
+                return _ask(chunk, insistir)
+            except Exception as exc:
+                if tentativa == 2:
+                    _job["skipped"] += 1
+                    _job["last_error"] = str(exc)[:200]
+                    return ""
+        return ""
+
+    def _cobrir(fh, texto: str, vistos: set[str]) -> None:
+        """Segunda passada so nos comandos que nao viraram fato.
+
+        Doc existe por causa dos comandos; se um escapou, a IA fica sem metade da ferramenta.
+        """
+        from agentepc.crawler import commands
+
+        todos = commands(texto)
+        if not todos:
+            return
+        ja = " ".join(vistos)
+        faltando = [c for c in todos if c.lower() not in ja][:60]
+        _job["cmds"] = [len(todos), len(todos) - len(faltando)]
+        for cmd in faltando:
+            if _job["state"] == "parando":
+                break
+            pos = texto.lower().find(cmd.lower())
+            trecho = texto[max(0, pos - 700): pos + 700] if pos >= 0 else ""
+            saida = _ask_safe(
+                f"{trecho}\n\nEscreva UMA linha, comecando com \"- \", dizendo o que o comando "
+                f"`{cmd}` faz segundo o trecho. Se o trecho nao diz, responda SEM FATOS.",
+                insistir=False,
+            )
+            for line in saida.splitlines():
+                line = line.strip()
+                if (line.startswith("- ") and line.lower() not in vistos
+                        and not is_secret(line) and grounded(line, trecho)):
+                    vistos.add(line.lower())
+                    fh.write(line + "\n")
+                    _job["facts"] += 1
+                    _job["cmds"][1] += 1
+                    break
+        fh.flush()
+
+    def _go() -> None:
+        try:
+            vistos: set[str] = set()
+            with out_path.open("a", encoding="utf-8") as fh:
+                for chunk in chunks:
+                    if _job["state"] == "parando":
+                        break
+                    saida = _ask_safe(chunk, insistir=False)
+                    # trecho grande sem nenhum fato quase sempre e o modelo sendo conservador
+                    if "- " not in saida and len(chunk) > 400:
+                        saida = _ask_safe(chunk, insistir=True)
+                    for line in saida.splitlines():
+                        line = line.strip()
+                        if not line.startswith("- ") or line.lower() in vistos:
+                            continue
+                        if _norm(line) in exemplos:
+                            _job["copied"] += 1  # veio do exemplo da skill, nao do texto
+                            continue
+                        if is_secret(line):
+                            _job["dropped"] += 1  # segredo nunca vai para o arquivo de treino
+                            continue
+                        if not grounded(line, chunk):
+                            _job["invented"] += 1  # nao esta no texto: seria treinar invencao
+                            continue
+                        vistos.add(line.lower())
+                        fh.write(line + "\n")
+                        _job["facts"] += 1
+                    fh.flush()
+                    _job["done"] += 1
+                _job["state"] = "comandos" if _job["state"] == "running" else _job["state"]
+                _cobrir(fh, raw, vistos)
+            tamanho = out_path.stat().st_size
+            _job["big"] = tamanho > PREVIEW_MAX
+            texto = out_path.read_text(encoding="utf-8")
+            _job["text"] = texto if not _job["big"] else texto[:PREVIEW_MAX]
+            _job["state"] = "done"
+        except Exception as exc:
+            _job["state"] = "error"
+            _job["error"] = str(exc)
+
+    threading.Thread(target=_go, name="formatter", daemon=True).start()
+    return {"accepted": True, "chunks": len(chunks), "file": str(out_path)}

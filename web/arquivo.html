@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>agente-pc — arquivos</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <nav>
+      <a href="/">Chat</a>
+      <a href="/arquivo.html">Arquivos</a>
+      <a href="/preparar.html">Preparar dados</a>
+      <a href="/treino.html">Treino</a>
+      <a href="/exportar.html">Exportar</a>
+      <a href="/ambiente.html">Ambiente</a>
+    </nav>
+    <header>
+      <div>
+        <h1>Arquivos</h1>
+        <div class="sub">Manda o caderno que a IA vai ler e, depois, assar no LoRA. Só estas extensões entram.</div>
+      </div>
+      <div class="controls">
+        <span id="loraPill" class="pill off">lora ausente</span>
+        <button id="loraToggle" type="button">Ligar LoRA</button>
+        <a href="/preparar.html"><button type="button">Preparar dados</button></a>
+        <a href="/treino.html"><button class="primary" type="button">Ir para o treino</button></a>
+      </div>
+    </header>
+    <div id="trainBanner" class="banner">Treino rodando. Acompanhe em <a href="/treino.html">Treino</a>.</div>
+
+    <section class="card">
+      <h2>Extensões aceitas</h2>
+      <ul class="exts">
+        <li><strong>.md</strong> — texto Markdown (notas, sobre você, fatos)</li>
+        <li><strong>.txt</strong> — texto puro</li>
+        <li><strong>.jsonl</strong> — um exemplo de treino por linha</li>
+      </ul>
+      <p class="note">Qualquer outra extensão (.pdf, .docx, .png, .csv…) é recusada. O arquivo vai para o caderno agora; vira peso só quando você treinar.</p>
+    </section>
+
+    <section class="card">
+      <h2>Adicionar arquivo (consulta e treino)</h2>
+      <p class="note">O modelo lê o arquivo e, se ele não estiver no formato certo, reescreve em fatos curtos (o mesmo formato serve para consulta e treino), seguindo a skill em <code>data/skills/formato-de-treino.md</code>. Você confere antes de salvar. O original fica guardado em <code>data/originais/</code>.</p>
+      <input id="subject" type="text" placeholder="Sobre quem/o quê é o arquivo? (opcional; vazio = o modelo descobre)" />
+      <label class="filepick">
+        Escolher arquivo
+        <input id="fpick" class="hidden" type="file" accept=".md,.txt,.jsonl,text/markdown,text/plain" />
+      </label>
+      <p id="uploadNote" class="note">Nada enviado ainda.</p>
+      <div id="review" class="hidden-block">
+        <textarea id="adjusted" class="big"></textarea>
+        <ul id="warns" class="files"></ul>
+        <div class="controls">
+          <button id="saveAdj" class="primary" type="button">Salvar ajustado</button>
+          <button id="saveOrig" type="button">Salvar original mesmo assim</button>
+          <button id="cancelAdj" type="button">Descartar</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Já no caderno</h2>
+      <ul id="fileList" class="runs"></ul>
+      <p id="delNote" class="note"></p>
+    </section>
+  </div>
+  <script src="/app.js"></script>
+  <script>
+    const note = document.getElementById("uploadNote");
+
+    document.getElementById("loraToggle").onclick = () => {
+      setUseLora(!window.useLora);
+      refresh();
+    };
+
+    let pending = null;   // { name, original }
+    const review = document.getElementById("review");
+    const adjusted = document.getElementById("adjusted");
+
+    async function saveFile(name, text, original) {
+      const data = await api("/api/knowledge", { name, text, original });
+      note.textContent = "Salvo: " + data.file + ". Já vale para consulta; para virar peso, treine na página Treino.";
+      review.classList.remove("open");
+      pending = null;
+      refresh();
+    }
+
+    async function showWarnings() {
+      const r = await api("/api/lint", { text: adjusted.value });
+      const ul = document.getElementById("warns");
+      ul.innerHTML = "";
+      (r.warnings.length ? r.warnings : ["Nenhum aviso. Formato bom para consulta e treino."]).forEach((w) => {
+        const li = document.createElement("li"); li.textContent = w; ul.appendChild(li);
+      });
+    }
+
+    async function waitFormat() {
+      for (;;) {
+        const j = await api("/api/format-job");
+        note.textContent = j.state === "running" ? "O modelo está ajustando o arquivo… " + j.done + "/" + j.total : note.textContent;
+        if (j.state === "running") { await new Promise((r) => setTimeout(r, 2000)); continue; }
+        if (j.state === "error") throw new Error(j.error);
+        return j;
+      }
+    }
+
+    document.getElementById("fpick").onchange = async (ev) => {
+      const file = ev.target.files && ev.target.files[0];
+      ev.target.value = "";
+      if (!file) return;
+      if (!allowedName(file.name)) {
+        note.textContent = "Extensão inválida. Use só .md, .txt ou .jsonl.";
+        return;
+      }
+      try {
+        const text = await file.text();
+        if (file.name.toLowerCase().endsWith(".jsonl")) { await saveFile(file.name, text); return; }
+        const lint = await api("/api/lint", { text });
+        if (!lint.warnings.some((w) => !w.startsWith("so "))) { await saveFile(file.name, text); return; }
+        note.textContent = "Fora do formato de treino. O modelo está ajustando…";
+        const r = await api("/api/format", { raw: text, subject: document.getElementById("subject").value });
+        if (!r.accepted) { note.textContent = r.reason; return; }
+        const j = await waitFormat();
+        pending = { name: file.name.replace(/\.[^.]+$/, "") + ".md", original: text, raw: text };
+        adjusted.value = j.text;
+        note.textContent = "Ajuste pronto" + (j.dropped ? " (" + j.dropped + " linha(s) sensíveis descartadas)" : "") + ". Confira e salve.";
+        review.classList.add("open");
+        showWarnings();
+      } catch (err) {
+        note.textContent = "Erro: " + err.message;
+      }
+    };
+
+    document.getElementById("saveAdj").onclick = () => pending && saveFile(pending.name, adjusted.value, pending.original).catch((e) => { note.textContent = "Erro: " + e.message; });
+    document.getElementById("saveOrig").onclick = () => pending && saveFile(pending.name, pending.original, pending.original).catch((e) => { note.textContent = "Erro: " + e.message; });
+    document.getElementById("cancelAdj").onclick = () => { pending = null; review.classList.remove("open"); note.textContent = "Descartado."; };
+
+    // a lista vem do app.js; aqui ela ganha o botao de apagar
+    const pinta = window.paint;
+    window.paint = (st) => {
+      pinta(st);
+      const list = document.getElementById("fileList");
+      if (!list) return;
+      list.innerHTML = "";
+      (st.files || []).forEach((row) => {
+        const li = document.createElement("li");
+        const nome = document.createElement("span");
+        nome.textContent = row.folder + "/" + row.name + " · " + Math.max(1, Math.round(row.bytes / 1024)) + " KB";
+        const del = document.createElement("button");
+        del.className = "danger small"; del.type = "button"; del.textContent = "Apagar arquivo";
+        del.onclick = async () => {
+          if (!confirm("Apagar " + row.name + " do caderno?\n\nO conhecimento já treinado com ele continua; só o arquivo sai.")) return;
+          try {
+            const r = await api("/api/knowledge-delete", { name: row.name });
+            document.getElementById("delNote").textContent = r.ok ? "Apagado: " + r.file : "Não apagou: " + r.reason;
+            refresh();
+          } catch (e) { document.getElementById("delNote").textContent = "Erro: " + e.message; }
+        };
+        li.append(nome, del);
+        list.appendChild(li);
+      });
+    };
+
+    refresh().catch((err) => { note.textContent = err.message; });
+    resumeTrainIfRunning().catch(() => {});
+  </script>
+</body>
+</html>

@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>agente-pc — exportar</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <nav>
+      <a href="/">Chat</a>
+      <a href="/arquivo.html">Arquivos</a>
+      <a href="/preparar.html">Preparar dados</a>
+      <a href="/treino.html">Treino</a>
+      <a href="/exportar.html">Exportar</a>
+      <a href="/ambiente.html">Ambiente</a>
+    </nav>
+    <header>
+      <div>
+        <h1>Exportar</h1>
+        <div class="sub">Monta uma pasta com o conhecimento treinado + o script que o roda em qualquer máquina. Só entra aqui o que está consolidado (🟢): o modelo acerta a prova inteira sem consulta.</div>
+      </div>
+    </header>
+
+    <section class="card">
+      <h2>Montar pacote</h2>
+      <p class="note">Escolha um conhecimento consolidado. Para um pacote com dois assuntos, treine os dois arquivos juntos na página Treino (juntar pesos já treinados não funciona). O pacote leva os pesos, um <code>run.py</code>, o README e o instalador com os pacotes certos do sistema escolhido (Ubuntu, Amazon Linux 2023 ou 2, SUSE, RHEL, Alpine, macOS ou Windows).</p>
+      <div class="grid2">
+        <select id="run" aria-label="Treino a exportar"></select>
+        <input id="name" type="text" placeholder="nome do pacote (ex.: jhow-qwen-v1)" />
+      </div>
+      <label class="sub">Sistema onde vai rodar <select id="sistema"></select></label>
+      <label class="sub"><input id="base" type="checkbox" /> incluir o modelo base no pacote (~6 GB, roda sem internet)</label>
+      <label class="sub"><input id="archive" type="checkbox" checked /> gerar também um .tar.gz para upload</label>
+      <div class="controls">
+        <button id="go" class="primary" type="button">Montar pacote</button>
+        <span id="spin" class="spin" aria-hidden="true"></span>
+      </div>
+      <div id="log"></div>
+    </section>
+
+    <section class="card">
+      <h2>Pacotes prontos</h2>
+      <p class="note">Cada pacote carrega o modelo de origem do conhecimento. Em outro modelo o adaptador não funciona.</p>
+      <ul id="items" class="runs"></ul>
+    </section>
+  </div>
+  <script src="/app.js"></script>
+  <script>
+    let poll = null;
+
+    function mb(n) { return n >= 1e9 ? (n / 1e9).toFixed(1) + " GB" : Math.round(n / 1e6) + " MB"; }
+
+    async function loadRuns() {
+      const j = await api("/api/export-job");
+      const sel = document.getElementById("run");
+      sel.innerHTML = "";
+      (j.runs || []).slice().reverse().forEach((r) => {
+        const o = document.createElement("option");
+        o.value = r.id;
+        o.textContent = "🟢 " + r.file + " · " + (r.facts || "?") + " linhas · modelo " + (r.modelo || r.base_hf || "?");
+        sel.appendChild(o);
+      });
+      if (!sel.options.length) {
+        const o = document.createElement("option");
+        o.value = ""; o.textContent = "nenhum conhecimento consolidado ainda";
+        sel.appendChild(o);
+        document.getElementById("go").disabled = true;
+      }
+      if (!document.getElementById("name").value && sel.value) {
+        const txt = sel.options[sel.selectedIndex].textContent;
+        document.getElementById("name").value = txt.replace(/^🟢 /, "").split(" ·")[0].replace(/\.[a-z]+$/, "");
+      }
+    }
+
+    async function refreshExports() {
+      const j = await api("/api/export-job");
+      const box = document.getElementById("log");
+      box.innerHTML = "";
+      j.lines.forEach((l) => appendLine("log", "[" + fmtTime(l.ts) + "] " + l.msg, "msg sys" + (/erro/.test(l.msg) ? " bad" : "")));
+      const running = j.state === "running";
+      document.getElementById("spin").classList.toggle("on", running);
+      document.getElementById("go").disabled = running;
+      if (running && !poll) poll = setInterval(() => refreshExports().catch(() => {}), 2000);
+      if (!running && poll) { clearInterval(poll); poll = null; }
+      if (!j.base_local) document.getElementById("base").disabled = true;
+      const ul = document.getElementById("items");
+      ul.innerHTML = "";
+      if (!j.items.length) ul.innerHTML = "<li>Nenhum pacote ainda.</li>";
+      j.items.forEach((it) => {
+        const li = document.createElement("li");
+        const span = document.createElement("span");
+        span.textContent = it.name + " · " + mb(it.bytes) + (it.archive ? " · .tar.gz" : it.file ? " · " + it.file : "");
+        const path = document.createElement("div");
+        path.className = "note";
+        path.textContent = it.path;
+        const info = document.createElement("div");
+        info.append(span, path);
+        const del = document.createElement("button");
+        del.className = "danger small"; del.type = "button"; del.textContent = "Apagar";
+        del.onclick = async () => {
+          if (!confirm("Apagar o pacote " + it.name + "? O treino e o modelo não são afetados.")) return;
+          await api("/api/export-delete", { name: it.name.replace(/\.tar\.gz$/, "") });
+          refreshExports();
+        };
+        li.append(info, del);
+        ul.appendChild(li);
+      });
+    }
+
+    document.getElementById("go").onclick = async () => {
+      const r = await api("/api/export", {
+        id: document.getElementById("run").value,
+        name: document.getElementById("name").value,
+        base: document.getElementById("base").checked,
+        sistema: document.getElementById("sistema").value,
+        archive: document.getElementById("archive").checked,
+      });
+      if (!r.accepted) { alert(r.reason); return; }
+      refreshExports();
+    };
+
+    api("/api/sistemas").then((s) => {
+      const sel = document.getElementById("sistema");
+      s.itens.forEach((i) => { const o = document.createElement("option"); o.value = i.id; o.textContent = i.nome; sel.appendChild(o); });
+    });
+    loadRuns().catch((e) => appendLine("log", e.message));
+    refreshExports().catch((e) => appendLine("log", e.message));
+  </script>
+</body>
+</html>

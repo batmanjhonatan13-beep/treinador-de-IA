@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>agente-pc — treino</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <nav>
+      <a href="/">Chat</a>
+      <a href="/arquivo.html">Arquivos</a>
+      <a href="/preparar.html">Preparar dados</a>
+      <a href="/treino.html">Treino</a>
+      <a href="/exportar.html">Exportar</a>
+      <a href="/ambiente.html">Ambiente</a>
+    </nav>
+    <header>
+      <div>
+        <h1>Treino</h1>
+        <div class="sub">Escolha um arquivo — ou vários, com Ctrl, para virarem um conhecimento só (juntar depois do treino não funciona). Sempre a partir do Qwen original; cada treino é independente e fica guardado como um conhecimento que o chat pode ativar. 🟢 consolidado = três tentativas seguidas, cada uma começando do zero, acertando a prova inteira já na primeira vez. Desliga o modelo, treina, liga sem caderno e pergunta tudo do arquivo. Repete até acertar todas.</div>
+      </div>
+      <div class="controls">
+        <select id="trainFile" aria-label="Arquivos para treinar" multiple size="4"></select>
+        <button id="trainBtn" class="primary" type="button">Treinar agora</button>
+        <button id="stopBtn" class="danger" type="button" disabled>Parar treino</button>
+        <span id="spin" class="spin" aria-hidden="true"></span>
+      </div>
+    </header>
+    <div id="bar" class="bar"><span></span></div>
+    <div id="planInfo" class="sub"></div>
+    <div id="rounds" class="sub"></div>
+
+    <section class="card">
+      <h2>Treinos <span class="sub">(um grupo por arquivo; as ações valem para o grupo inteiro, clique num treino para ver o log dele)</span></h2>
+      <ul id="history" class="runs"></ul>
+    </section>
+
+    <div class="sub" id="logTitle"></div>
+    <div id="trainLog"></div>
+  </div>
+  <script src="/app.js"></script>
+  <script>
+    let selected = "";      // vazio = ao vivo (treino atual)
+    let lastJob = null;
+    let lastHistKey = "";
+
+    function setTitle(text) { document.getElementById("logTitle").textContent = text; }
+
+    function renderLog(lines, emptyMsg) {
+      const box = document.getElementById("trainLog");
+      const stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 40;
+      box.innerHTML = "";
+      if (!lines.length) appendLine("trainLog", emptyMsg);
+      lines.forEach((l) => {
+        const cls = /ERRADO|erro|Erro/.test(l.msg) ? "msg sys bad" : /CERTO|Peso ok/.test(l.msg) ? "msg sys good" : "msg sys";
+        appendLine("trainLog", "[" + fmtTime(l.ts) + "] " + l.msg, cls);
+      });
+      if (!stick) return;
+      box.scrollTop = box.scrollHeight;
+    }
+
+    async function showLog() {
+      const runningId = lastJob && lastJob.state === "running" ? lastJob.id : "";
+      const id = selected || runningId;
+      if (!id) {
+        setTitle("Nenhum treino rodando. Clique em um treino acima para ver o log dele.");
+        renderLog([], "O log aparece aqui.");
+        return;
+      }
+      const data = await api("/api/train-log?id=" + encodeURIComponent(id));
+      setTitle((selected ? "Log do treino " : "Ao vivo: treino ") + id + (selected && runningId === id ? " (rodando)" : ""));
+      renderLog(data.lines, "Sem log gravado para este treino.");
+    }
+
+    const openGroups = new Set();
+
+    function renderHistory(rows) {
+      const key = JSON.stringify(rows) + selected + [...openGroups].join("|");
+      if (key === lastHistKey) return;
+      lastHistKey = key;
+      const ul = document.getElementById("history");
+      ul.innerHTML = "";
+      if (!rows.length) { ul.innerHTML = "<li>Nenhum treino ainda.</li>"; return; }
+      const groups = new Map();      // um grupo por arquivo, os mais recentes primeiro
+      rows.slice().reverse().forEach((h) => {
+        if (!groups.has(h.file)) groups.set(h.file, []);
+        groups.get(h.file).push(h);
+      });
+      const labels = { done: "acertou tudo", stopped: "parado", error: "não fechou", legado: "anterior" };
+      groups.forEach((runs, file) => {
+        const li = document.createElement("li");
+        li.className = "group";
+        const isOpen = openGroups.has(file) || runs.some((r) => r.id === selected);
+        const rounds = runs.reduce((n, r) => n + (r.rounds || 0), 0);
+        const done = runs.filter((r) => r.state === "done").length;
+        const head = document.createElement("button");
+        head.type = "button";
+        head.className = "link head";
+        const trained = runs.reduce((n, r) => n + (r.train_rounds || 0), 0);
+        const consolidado = runs.some((r) => r.consolidated);
+        head.textContent = (isOpen ? "▾ " : "▸ ") + (consolidado ? "🟢 " : "") + file + " · " + runs.length +
+          " treino(s) · " + (trained || rounds) + " rodada(s) no total" +
+          (consolidado ? " · consolidado: não precisa treinar de novo" : " · " + done + " fechou(aram) com 100%");
+        if (consolidado) head.classList.add("good");
+        head.onclick = () => { isOpen ? openGroups.delete(file) : openGroups.add(file); lastHistKey = ""; renderHistory(rows); };
+        const acoes = document.createElement("div");
+        acoes.className = "controls";
+        const temPesos = runs.some((r) => r.snapshot);
+        if (temPesos && file && !file.startsWith("(")) {
+          const tst = document.createElement("button");
+          tst.type = "button"; tst.className = "small";
+          tst.textContent = "Testar consolidação (" + runs.filter((r) => r.snapshot).length + " treino(s))";
+          tst.onclick = async () => {
+            const r = await api("/api/train-test", { file });
+            if (!r.accepted) { appendLine("trainLog", r.reason); return; }
+            watchTest();
+          };
+          acoes.appendChild(tst);
+        }
+        if (temPesos) {
+          const del = document.createElement("button");
+          del.type = "button"; del.className = "danger small";
+          del.textContent = "Apagar conhecimento do grupo";
+          del.onclick = async () => {
+            if (!confirm("Apagar os pesos de TODOS os treinos de " + file + "?\n\nOs logs ficam e os pacotes já exportados não são afetados.")) return;
+            const r = await api("/api/train-delete", { file });
+            appendLine("trainLog", r.ok ? "Apagados: " + r.removed.join(", ") : "Não apagou: " + r.reason);
+            loadFiles();
+            refreshAll();
+          };
+          acoes.appendChild(del);
+        }
+        const bloco = document.createElement("div");
+        bloco.className = "grouphead";
+        bloco.append(head, acoes);
+        li.appendChild(bloco);
+        if (isOpen) {
+          const inner = document.createElement("ul");
+          inner.className = "runs inner";
+          runs.forEach((h) => inner.appendChild(runItem(h, rows, labels)));
+          li.appendChild(inner);
+        }
+        ul.appendChild(li);
+      });
+    }
+
+    function runItem(h, rows, labels) {
+      const li = document.createElement("li");
+      li.className = h.id === selected ? "sel" : "";
+      const main = document.createElement("button");
+      main.type = "button";
+      main.className = "link";
+      const w = h.snapshot ? " · pesos " + fmtSize(h.size) : h.deleted ? " · apagado" : " · sem pesos";
+      const nota = h.tested ? " · teste " + h.tested[0] + "/" + h.tested[1] : "";
+      const eff = h.train_rounds
+        ? h.train_rounds + " rodadas · " + h.rounds + " prova(s)" + (h.facts ? " · " + (h.train_rounds / h.facts).toFixed(2) + " por linha" : "")
+        : h.rounds + " rodada(s)";
+      main.textContent = (h.consolidated ? "🟢 " : "") + fmtTime(h.ts, true) + " · " + (labels[h.state] || h.state) +
+        " · " + eff + " · " + h.passed + "/" + h.total + nota + w;
+      main.onclick = () => { selected = selected === h.id ? "" : h.id; lastHistKey = ""; renderHistory(rows); showLog(); };
+      li.appendChild(main);
+      return li;
+    }
+
+    let testPoll = null;
+    function watchTest() {
+      if (testPoll) return;
+      testPoll = setInterval(async () => {
+        const j = await api("/api/train-job");
+        setTitle("Teste de consolidação " + j.test.id + ": " + j.test.text);
+        if (j.test.state !== "running") {
+          clearInterval(testPoll); testPoll = null;
+          appendLine("trainLog", "Teste de consolidação: " + j.test.text);
+          refreshAll();
+        }
+      }, 3000);
+    }
+
+    async function refreshAll() {
+      lastJob = await api("/api/train-job");
+      renderHistory(lastJob.history);
+      await showLog();
+    }
+
+    window.onTrainJob = (job) => {
+      lastJob = job;
+      renderHistory(job.history);
+      showLog().catch(() => {});
+    };
+
+    async function loadFiles() {
+      const st = await api("/api/status");
+      const sel = document.getElementById("trainFile");
+      const keep = [...sel.selectedOptions].map((o) => o.value);
+      sel.innerHTML = "";
+      (st.files || []).forEach((row) => {
+        const opt = document.createElement("option");
+        opt.value = row.name;
+        opt.textContent = row.folder + "/" + row.name;
+        opt.selected = keep.includes(row.name) || (!keep.length && !sel.options.length);
+        sel.appendChild(opt);
+      });
+      showPlan().catch(() => {});
+    }
+
+    function escolhidos() {
+      // dois ou mais arquivos viram UM conhecimento so: e a unica forma que funciona
+      return [...document.getElementById("trainFile").selectedOptions].map((o) => o.value).join(" + ");
+    }
+
+    async function showPlan() {
+      const file = escolhidos();
+      const box = document.getElementById("planInfo");
+      if (!file) { box.textContent = ""; return; }
+      const job = await api("/api/train-job");
+      const jaFeito = (job.consolidated_files || {})[file];
+      document.getElementById("trainBtn").disabled = !!jaFeito;
+      if (jaFeito) {
+        box.textContent = "🟢 " + file + " já está consolidado (treino " + jaFeito +
+          "): o modelo acerta a prova inteira sem consulta. Para treinar de novo, apague esse conhecimento na lista abaixo.";
+        return;
+      }
+      const d = await api("/api/learn", { file });
+      if (!d.will_train) { box.textContent = d.reason; return; }
+      const n = d.stats.facts;
+      box.textContent = d.predicted_rounds
+        ? n + " linhas. Pelo histórico (" + d.efficiency.ratio + " rodadas por linha): cada tentativa começa com " + d.predicted_rounds + " rodadas. Precisa de 3 tentativas seguidas acertando tudo de primeira."
+        : n + " linhas. Sem histórico ainda: a 1ª tentativa calibra quantas rodadas o arquivo precisa, e só então a sequência começa a contar.";
+    }
+    document.getElementById("trainFile").onchange = () => showPlan().catch(() => {});
+    document.getElementById("trainFile").oninput = () => showPlan().catch(() => {});
+    loadFiles().catch((err) => appendLine("trainLog", err.message));
+
+    document.getElementById("trainBtn").onclick = async () => {
+      const file = escolhidos();
+      if (!file) { appendLine("trainLog", "Escolha ao menos um arquivo."); return; }
+      if (!confirm("Treinar " + file + ".\nCada tentativa treina do zero e faz a prova sem caderno. Só fica consolidado com 3 tentativas seguidas acertando tudo de primeira. Sem limite de rodadas; pare quando quiser. Continuar?")) return;
+      setSpin(true);
+      selected = "";
+      lastTrainLog = "";
+      try {
+        const data = await api("/api/learn", { train: true, file });
+        if (!data.accepted) {
+          appendLine("trainLog", data.reason || data.log || "não iniciou");
+          setSpin(false);
+          return;
+        }
+        startTrainWatch();
+        refreshAll();
+      } catch (err) {
+        appendLine("trainLog", "Erro ao iniciar treino: " + err.message);
+        setSpin(false);
+      }
+    };
+
+    document.getElementById("stopBtn").onclick = async () => {
+      if (!confirm("Parar agora? Nada quebra: a rodada em curso é descartada e o LoRA já salvo continua intacto.")) return;
+      try {
+        const data = await api("/api/train-stop", {});
+        appendLine("trainLog", data.reason || "parada pedida");
+      } catch (err) {
+        appendLine("trainLog", "Erro ao parar: " + err.message);
+      }
+    };
+
+    refreshAll().catch((err) => appendLine("trainLog", err.message));
+    resumeTrainIfRunning().catch(() => {});
+  </script>
+</body>
+</html>

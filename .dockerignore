@@ -1,0 +1,11 @@
+.git
+.venv
+.venv-train
+__pycache__
+*.pyc
+.pytest_cache
+data/adapters
+data/datasets
+*.gguf
+.cursor
+.agent-tools
