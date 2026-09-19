@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>agente-pc — imagens</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <nav>
+      <a href="/">Chat</a>
+      <a href="/arquivo.html">Arquivos</a>
+      <a href="/preparar.html">Preparar dados</a>
+      <a href="/treino.html">Treino</a>
+      <a href="/imagens.html">Imagens</a>
+      <a href="/exportar.html">Exportar</a>
+      <a href="/ambiente.html">Ambiente</a>
+    </nav>
+    <header>
+      <div>
+        <h1>Imagens</h1>
+        <div class="sub">Ensina um <strong>estilo</strong> ao Stable Diffusion: junta imagens, treina um LoRA e gera amostras. Aqui não há selo verde — estilo não tem resposta certa, quem julga é você olhando.</div>
+      </div>
+      <div class="controls"><span id="gpuPill" class="pill off">verificando GPU…</span></div>
+    </header>
+
+    <section class="card">
+      <h2>1. Juntar imagens</h2>
+      <p class="note">Busca em fontes que declaram a licença (Openverse e Wikimedia Commons) e guarda autor e licença de cada arquivo em <code>creditos.json</code>. Para usar arte sua, é só colocar os arquivos numa pasta dentro de <code>data/imagens/</code>.</p>
+      <div class="grid2">
+        <input id="termo" type="text" placeholder="estilo que você procura (ex.: watercolor landscape)" />
+        <input id="nomeColecao" type="text" placeholder="nome da coleção (opcional)" />
+        <label class="sub">Quantas <input id="quantidade" type="number" value="24" min="4" max="200" /></label>
+        <label class="sub">Licença
+          <select id="licenca">
+            <option value="livres">livres (CC0, domínio público, BY, BY-SA)</option>
+            <option value="sem-comercial">inclui uso não comercial</option>
+            <option value="todas">todas (confira caso a caso)</option>
+          </select>
+        </label>
+      </div>
+      <div class="controls">
+        <button id="coletarBtn" class="primary" type="button">Buscar imagens</button>
+        <button id="coletarStop" class="danger" type="button" disabled>Parar</button>
+        <span id="coletaSpin" class="spin" aria-hidden="true"></span>
+        <span id="coletaNota" class="note"></span>
+      </div>
+      <div id="coletaLog"></div>
+      <ul id="colecoes" class="runs"></ul>
+    </section>
+
+    <section class="card">
+      <h2>2. Treinar o estilo</h2>
+      <p class="note">O <strong>gatilho</strong> é a palavra que você vai escrever depois para chamar o estilo. Na sua placa, 512px e uns 600 passos levam poucos minutos.</p>
+      <div class="grid2">
+        <select id="colecaoSel"></select>
+        <input id="gatilho" type="text" placeholder="gatilho (ex.: estilo aquarela)" />
+        <label class="sub">Passos <input id="passos" type="number" value="600" min="100" max="4000" step="100" /></label>
+        <label class="sub">Resolução
+          <select id="resolucao"><option value="512">512 px</option><option value="768">768 px (mais lento)</option></select>
+        </label>
+      </div>
+      <div class="controls">
+        <button id="treinarBtn" class="primary" type="button">Treinar estilo</button>
+        <button id="treinoStop" class="danger" type="button" disabled>Parar</button>
+        <span id="treinoSpin" class="spin" aria-hidden="true"></span>
+        <span id="treinoNota" class="note"></span>
+      </div>
+      <div id="treinoBar" class="bar"><span></span></div>
+      <div id="treinoLog"></div>
+    </section>
+
+    <section class="card">
+      <h2>3. Estilos treinados</h2>
+      <p class="note">O arquivo <code>.safetensors</code> funciona no Automatic1111, ComfyUI, ou em qualquer lugar que aceite LoRA de fora.</p>
+      <ul id="modelos" class="runs"></ul>
+    </section>
+  </div>
+  <script src="/app.js"></script>
+  <script>
+    let pollColeta = null, pollTreino = null;
+
+    function mb(n) { return n >= 1e6 ? (n / 1e6).toFixed(1) + " MB" : Math.round(n / 1000) + " KB"; }
+
+    async function pinta() {
+      const j = await api("/api/imagens");
+      const c = j.coleta, t = j.treino;
+
+      const gp = document.getElementById("gpuPill");
+      gp.textContent = t.gpu ? "GPU pronta" : "sem GPU — treino de imagem não roda";
+      gp.className = "pill " + (t.gpu ? "on" : "off");
+      document.getElementById("treinarBtn").disabled = !t.gpu || t.state === "running";
+
+      const rodandoC = c.state === "running";
+      document.getElementById("coletaSpin").classList.toggle("on", rodandoC);
+      document.getElementById("coletarBtn").disabled = rodandoC;
+      document.getElementById("coletarStop").disabled = !rodandoC;
+      document.getElementById("coletaNota").textContent = c.alvo ? c.baixadas + "/" + c.alvo : "";
+      const cl = document.getElementById("coletaLog");
+      cl.innerHTML = "";
+      (c.linhas || []).slice(-6).forEach((l) => appendLine("coletaLog", l, "msg sys" + (/erro/i.test(l) ? " bad" : "")));
+
+      const ul = document.getElementById("colecoes");
+      const sel = document.getElementById("colecaoSel");
+      const antes = sel.value;
+      ul.innerHTML = ""; sel.innerHTML = "";
+      (c.colecoes || []).forEach((col) => {
+        const li = document.createElement("li");
+        const info = document.createElement("div");
+        info.textContent = col.id + " · " + col.imagens + " imagem(ns) · " + mb(col.bytes) +
+          (col.licenca ? " · licença: " + col.licenca : "");
+        const nota = document.createElement("div");
+        nota.className = "note"; nota.textContent = col.termo || "";
+        const bloco = document.createElement("div"); bloco.append(info, nota);
+        const del = document.createElement("button");
+        del.className = "danger small"; del.type = "button"; del.textContent = "Apagar";
+        del.onclick = async () => {
+          if (!confirm("Apagar a coleção " + col.id + "?")) return;
+          await api("/api/colecao-delete", { id: col.id }); pinta();
+        };
+        li.append(bloco, del); ul.appendChild(li);
+        const o = document.createElement("option");
+        o.value = col.id; o.textContent = col.id + " (" + col.imagens + ")";
+        sel.appendChild(o);
+      });
+      if (antes) sel.value = antes;
+
+      const rodandoT = t.state === "running" || t.state === "parando";
+      document.getElementById("treinoSpin").classList.toggle("on", rodandoT);
+      document.getElementById("treinoStop").disabled = !rodandoT;
+      document.getElementById("treinoNota").textContent = t.total
+        ? "passo " + t.passo + "/" + t.total + (t.perda ? " · perda " + t.perda.toFixed(4) : "")
+        : "";
+      const bar = document.getElementById("treinoBar");
+      bar.classList.toggle("on", t.total > 0);
+      bar.classList.toggle("good", t.state === "done");
+      bar.firstElementChild.style.width = t.total ? Math.round((t.passo / t.total) * 100) + "%" : "0%";
+      const tl = document.getElementById("treinoLog");
+      tl.innerHTML = "";
+      (t.linhas || []).slice(-8).forEach((l) => appendLine("treinoLog", l,
+        "msg sys" + (/erro/i.test(l) ? " bad" : /CONCLUIDO/.test(l) ? " good" : "")));
+
+      const ml = document.getElementById("modelos");
+      ml.innerHTML = "";
+      if (!(t.modelos || []).length) ml.innerHTML = "<li>Nenhum estilo treinado ainda.</li>";
+      (t.modelos || []).slice().reverse().forEach((m) => {
+        const li = document.createElement("li");
+        const bloco = document.createElement("div");
+        const tit = document.createElement("div");
+        tit.textContent = m.id + " · gatilho “" + (m.gatilho || "?") + "” · " +
+          (m.passos || 0) + " passos · " + (m.imagens || 0) + " imagem(ns) · " + mb(m.bytes || 0);
+        const nota = document.createElement("div");
+        nota.className = "note";
+        nota.textContent = (m.base || "") + (m.quando ? " · " + fmtTime(m.quando, true) : "");
+        bloco.append(tit, nota);
+        (m.amostras || []).forEach((a) => {
+          const img = document.createElement("img");
+          img.src = "/img/imagem-lora/" + m.id + "/" + a;
+          img.alt = "amostra do estilo " + m.id;
+          img.style.cssText = "width:160px;height:160px;object-fit:cover;border-radius:10px;margin:6px 6px 0 0";
+          bloco.appendChild(img);
+        });
+        li.appendChild(bloco);
+        const del = document.createElement("button");
+        del.className = "danger small"; del.type = "button"; del.textContent = "Apagar";
+        del.onclick = async () => {
+          if (!confirm("Apagar o estilo " + m.id + "?")) return;
+          await api("/api/imagem-delete", { id: m.id }); pinta();
+        };
+        li.appendChild(del);
+        ml.appendChild(li);
+      });
+    }
+
+    document.getElementById("coletarBtn").onclick = async () => {
+      const r = await api("/api/coletar", {
+        termo: document.getElementById("termo").value,
+        quantidade: document.getElementById("quantidade").value,
+        licenca: document.getElementById("licenca").value,
+        nome: document.getElementById("nomeColecao").value,
+      });
+      if (!r.accepted) { document.getElementById("coletaNota").textContent = r.reason; return; }
+      pinta();
+    };
+    document.getElementById("coletarStop").onclick = () => api("/api/coletar-stop", {}).then(pinta);
+
+    document.getElementById("treinarBtn").onclick = async () => {
+      const col = document.getElementById("colecaoSel").value;
+      if (!col) { document.getElementById("treinoNota").textContent = "junte imagens primeiro"; return; }
+      if (!confirm("Treinar o estilo com as imagens de " + col + "?\n\nA GPU fica ocupada; o modelo de texto é descarregado.")) return;
+      const r = await api("/api/imagem-treinar", {
+        colecao: col,
+        gatilho: document.getElementById("gatilho").value,
+        passos: document.getElementById("passos").value,
+        resolucao: document.getElementById("resolucao").value,
+      });
+      if (!r.accepted) { document.getElementById("treinoNota").textContent = r.reason; return; }
+      pinta();
+    };
+    document.getElementById("treinoStop").onclick = () => api("/api/imagem-stop", {}).then(pinta);
+
+    setInterval(() => pinta().catch(() => {}), 4000);
+    pinta().catch((e) => { document.getElementById("coletaNota").textContent = e.message; });
+  </script>
+</body>
+</html>

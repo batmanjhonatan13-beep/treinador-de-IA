@@ -5,7 +5,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from agentepc import crawler, export, formatter, health, lotes, memory, ollama, provision, sistemas, train
+from agentepc import coletor, crawler, export, formatter, health, imagem, lotes, memory, ollama, provision, sistemas, train
 from agentepc.config import ROOT
 
 WEB = ROOT / "web"
@@ -65,6 +65,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/fix-job":
             self._json(200, formatter.conserto_status())
             return
+        if path == "/api/imagens":
+            self._json(200, {"coleta": coletor.status(), "treino": imagem.status()})
+            return
         if path == "/api/lotes":
             self._json(200, {"itens": lotes.listar()})
             return
@@ -93,6 +96,20 @@ class Handler(BaseHTTPRequestHandler):
                     "lora": train.adapter_exists(),
                 },
             )
+            return
+        if path.startswith("/img/"):
+            alvo = (ROOT / "data" / path[len("/img/"):]).resolve()
+            permitido = (ROOT / "data").resolve()
+            if permitido in alvo.parents and alvo.is_file() and alvo.suffix.lower() in (
+                    ".png", ".jpg", ".jpeg", ".webp"):
+                dados = alvo.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", f"image/{alvo.suffix.lstrip('.').replace('jpg', 'jpeg')}")
+                self.send_header("Content-Length", str(len(dados)))
+                self.end_headers()
+                self.wfile.write(dados)
+            else:
+                self.send_error(404)
             return
         rel = "index.html" if path == "/" else path.lstrip("/")
         file = (WEB / rel).resolve()
@@ -234,6 +251,31 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/fix":
                 b = self._read_json()
                 self._json(200, formatter.corrigir(b.get("text") or "", b.get("subject") or ""))
+                return
+            if path == "/api/coletar":
+                b = self._read_json()
+                self._json(200, coletor.coletar(
+                    b.get("termo") or "", int(b.get("quantidade") or 24),
+                    b.get("licenca") or "livres", b.get("fontes") or "openverse,wikimedia",
+                    b.get("nome") or ""))
+                return
+            if path == "/api/coletar-stop":
+                self._json(200, coletor.parar())
+                return
+            if path == "/api/colecao-delete":
+                self._json(200, coletor.apagar(self._read_json().get("id") or ""))
+                return
+            if path == "/api/imagem-treinar":
+                b = self._read_json()
+                self._json(200, imagem.treinar(
+                    b.get("colecao") or "", b.get("gatilho") or "", int(b.get("passos") or 600),
+                    b.get("nome") or "", int(b.get("resolucao") or 512)))
+                return
+            if path == "/api/imagem-stop":
+                self._json(200, imagem.parar())
+                return
+            if path == "/api/imagem-delete":
+                self._json(200, imagem.apagar(self._read_json().get("id") or ""))
                 return
             if path == "/api/lote-delete":
                 self._json(200, lotes.apagar(self._read_json().get("id") or ""))

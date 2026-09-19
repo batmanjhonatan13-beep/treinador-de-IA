@@ -13,3 +13,5 @@ __pycache__/
 *.bin
 *.safetensors
 .DS_Store
+data/imagens/
+data/imagem-lora/

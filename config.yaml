@@ -94,6 +94,13 @@ promote:
     - senha
     - token
 
+# Treino de imagem (LoRA de estilo). Só com GPU.
+imagem:
+  base: stable-diffusion-v1-5/stable-diffusion-v1-5
+  passos: 600
+  resolucao: 512
+  rank: 16
+
 learn:
   min_facts: 5
   # 0 = sem teto: so para quando a prova inteira passa (ou no botao Parar)

@@ -38,7 +38,7 @@ na pasta do usuário. O `./docker/subir-docker.sh` procura um que responda e diz
 página **Ambiente** mostra o mesmo, escrito. Com o Desktop funcionando, o rootless vira
 sobra: `pkill -f dockerd-rootless` e `rm -rf ~/.local/bin/docker*` limpam.
 
-## As seis páginas
+## As sete páginas
 
 | Página | O que faz |
 |---|---|
@@ -46,6 +46,7 @@ sobra: `pkill -f dockerd-rootless` e `rm -rf ~/.local/bin/docker*` limpam.
 | **Arquivos** | Manda `.md`, `.txt` ou `.jsonl`. Fora do formato, o modelo reescreve e você confere. Dá para apagar arquivo. |
 | **Preparar dados** | Cola texto **ou extrai um site de documentação inteiro** e já devolve os fatos prontos. |
 | **Treino** | Treina um arquivo (ou vários juntos), prova sem consulta e repete até consolidar. |
+| **Imagens** | Junta imagens com licença declarada e treina um **LoRA de estilo** no Stable Diffusion. |
 | **Exportar** | Empacota conhecimento consolidado + instalador do sistema escolhido. |
 | **Ambiente** | Estado da conexão, catálogo de modelos e instalação local ou por SSH. |
 
@@ -151,6 +152,28 @@ Dois filtros cuidam da qualidade:
 - **Fato longo fica longo.** Comando e explicação técnica são compridos; cortar em pedaços
   curtos estraga o sentido. O Conferir só aponta linha curta demais, primeira pessoa,
   repetição e segredo — e o botão **Consertar** arruma isso.
+
+## Treinar um estilo de imagem
+
+Mesma técnica (LoRA), outro tipo de modelo. **Só com GPU** — difusão na CPU não é lenta, é
+inviável. Medido nesta máquina (RTX 3060): SmolLM2 de texto treina na memória; o estilo de
+imagem não.
+
+1. **Juntar imagens** — busca no Openverse e no Wikimedia Commons, que declaram a licença.
+   Autor, licença e endereço de cada arquivo ficam em `creditos.json`. Para usar arte sua,
+   basta colocar os arquivos numa pasta dentro de `data/imagens/`.
+2. **Treinar** — LoRA só na atenção do UNet, que é onde o estilo pega. Medido: 12 imagens,
+   200 passos, 512 px → **3 minutos**, adaptador de 3,2 M pesos.
+3. **Julgar** — ele gera amostras e você decide. **Não existe selo verde aqui**: estilo não
+   tem resposta certa, então um número de "acertou" seria inventado.
+
+O `.safetensors` que sai funciona no Automatic1111, ComfyUI ou em qualquer lugar que aceite
+LoRA de fora.
+
+**Sobre as imagens que você junta:** o coletor só usa fontes que dizem a licença, e guarda o
+crédito. Raspar arte de Pinterest, ArtStation ou Instagram para copiar o traço de alguém é
+outra conversa — o arquivo baixado não diz nada sobre o direito de uso, e publicar o
+resultado pode dar problema. A ferramenta não faz isso.
 
 ## Preparar outra máquina
 
