@@ -34,7 +34,29 @@
       </div>
     </header>
     <div id="trainBanner" class="banner">Treino rodando. Acompanhe em <a href="/treino.html">Treino</a>.</div>
+    <div class="controls" id="abas">
+      <button id="abaTexto" class="primary" type="button">Texto</button>
+      <button id="abaImagem" type="button">Imagem</button>
+      <span id="abaNota" class="note"></span>
+    </div>
     <div id="log"></div>
+    <section class="card hidden-block" id="painelImagem">
+      <h2>Testar um estilo treinado</h2>
+      <p class="note">Gera aqui com o LoRA ligado — é assim que você confere se o estilo pegou e decide se aprova.</p>
+      <div class="grid2">
+        <select id="estiloSel"></select>
+        <label class="sub">Força <input id="forca" type="number" value="0.9" min="0.1" max="1.5" step="0.1" /></label>
+        <label class="sub">Passos <input id="passosImg" type="number" value="25" min="10" max="50" step="5" /></label>
+      </div>
+      <input id="pedido" type="text" placeholder="o que você quer ver (ex.: uma vila no alto da montanha)" />
+      <div class="controls">
+        <button id="gerarBtn" class="primary" type="button">Gerar</button>
+        <span id="gerarSpin" class="spin" aria-hidden="true"></span>
+        <span id="gerarNota" class="note"></span>
+      </div>
+      <div id="galeria"></div>
+      <div class="controls" id="julgar"></div>
+    </section>
     <form id="form" class="row">
       <textarea id="q" rows="2" placeholder="Pergunte ao modelo local…" required></textarea>
       <button id="send" class="primary" type="submit">Enviar</button>
@@ -158,6 +180,93 @@
       } catch (err) { add("sys", "Erro ao trocar: " + err.message); }
     };
     loadModels().catch(() => {});
+
+    // ---- aba de imagem: testar e julgar o estilo treinado ----
+    let pollGerar = null;
+    const painel = document.getElementById("painelImagem");
+
+    function aba(qual) {
+      painel.classList.toggle("open", qual === "imagem");
+      document.getElementById("log").style.display = qual === "imagem" ? "none" : "";
+      document.getElementById("form").style.display = qual === "imagem" ? "none" : "";
+      document.getElementById("abaTexto").className = qual === "texto" ? "primary" : "";
+      document.getElementById("abaImagem").className = qual === "imagem" ? "primary" : "";
+      if (qual === "imagem") listaEstilos();
+    }
+    document.getElementById("abaTexto").onclick = () => aba("texto");
+    document.getElementById("abaImagem").onclick = () => aba("imagem");
+
+    async function listaEstilos() {
+      const cap = await api("/api/capacidades");
+      const item = cap.itens.find((i) => i.id === "imagem-estilo");
+      const nota = document.getElementById("abaNota");
+      if (item && item.situacao !== "disponivel") {
+        nota.textContent = "imagem indisponível: " + (item.motivo || item.situacao);
+        document.getElementById("gerarBtn").disabled = true;
+        return;
+      }
+      nota.textContent = "";
+      const j = await api("/api/consolidados");
+      const sel = document.getElementById("estiloSel");
+      const antes = sel.value;
+      sel.innerHTML = "";
+      const o = document.createElement("option");
+      o.value = ""; o.textContent = "sem estilo (modelo puro)";
+      sel.appendChild(o);
+      j.itens.filter((i) => i.tipo === "imagem").forEach((i) => {
+        const op = document.createElement("option");
+        op.value = i.id;
+        op.textContent = (i.consolidado ? "🟢 " : i.reprovado ? "✕ " : "• ") + i.id + " — " + i.nome;
+        sel.appendChild(op);
+      });
+      if (antes) sel.value = antes;
+      pintaJulgar(j.itens.find((i) => i.tipo === "imagem" && i.id === sel.value));
+    }
+
+    function pintaJulgar(item) {
+      const box = document.getElementById("julgar");
+      box.innerHTML = "";
+      if (!item) return;
+      const txt = document.createElement("span");
+      txt.className = "note";
+      txt.textContent = item.detalhe;
+      const sim = document.createElement("button");
+      sim.className = "small primary"; sim.type = "button"; sim.textContent = "O estilo pegou";
+      sim.onclick = async () => { await api("/api/aprovar", { tipo: "imagem", id: item.id, aprovado: true }); listaEstilos(); };
+      const nao = document.createElement("button");
+      nao.className = "small danger"; nao.type = "button"; nao.textContent = "Não pegou";
+      nao.onclick = async () => { await api("/api/aprovar", { tipo: "imagem", id: item.id, aprovado: false }); listaEstilos(); };
+      box.append(txt, sim, nao);
+    }
+    document.getElementById("estiloSel").onchange = () => listaEstilos();
+
+    document.getElementById("gerarBtn").onclick = async () => {
+      const r = await api("/api/gerar", {
+        pedido: document.getElementById("pedido").value,
+        estilo: document.getElementById("estiloSel").value,
+        passos: document.getElementById("passosImg").value,
+        forca: document.getElementById("forca").value,
+      });
+      if (!r.accepted) { document.getElementById("gerarNota").textContent = r.reason; return; }
+      document.getElementById("gerarSpin").classList.add("on");
+      if (!pollGerar) pollGerar = setInterval(vigiaGerar, 2000);
+    };
+
+    async function vigiaGerar() {
+      const j = await api("/api/gerar-job");
+      document.getElementById("gerarNota").textContent = (j.linhas || []).slice(-1)[0] || "";
+      if (j.state === "running") return;
+      clearInterval(pollGerar); pollGerar = null;
+      document.getElementById("gerarSpin").classList.remove("on");
+      if (j.arquivo) {
+        const g = document.getElementById("galeria");
+        const img = document.createElement("img");
+        img.src = "/img/geradas/" + j.arquivo;
+        img.alt = j.pedido;
+        img.style.cssText = "width:320px;border-radius:12px;margin-top:10px";
+        g.prepend(img);
+      }
+    }
   </script>
 </body>
 </html>

@@ -48,7 +48,7 @@ sobra: `pkill -f dockerd-rootless` e `rm -rf ~/.local/bin/docker*` limpam.
 | **Treino** | Treina um arquivo (ou vários juntos), prova sem consulta e repete até consolidar. |
 | **Imagens** | Junta imagens com licença declarada e treina um **LoRA de estilo** no Stable Diffusion. |
 | **Exportar** | Empacota conhecimento consolidado + instalador do sistema escolhido. |
-| **Ambiente** | Estado da conexão, catálogo de modelos e instalação local ou por SSH. |
+| **Ambiente** | Estado da conexão, **catálogo de treinos com instalação sob demanda**, modelos e instalação por SSH. |
 
 Em toda página, a pílula no canto do menu diz **conectado** ou **não conectado**, com o que
 está faltando.
@@ -152,6 +152,39 @@ Dois filtros cuidam da qualidade:
 - **Fato longo fica longo.** Comando e explicação técnica são compridos; cortar em pedaços
   curtos estraga o sentido. O Conferir só aponta linha curta demais, primeira pessoa,
   repetição e segredo — e o botão **Consertar** arruma isso.
+
+## O que dá para treinar
+
+O catálogo fica em **Ambiente** e se libera sozinho conforme a máquina: cada treino declara
+VRAM, RAM, pacotes e programas, e o que não passa aparece bloqueado **com o motivo escrito**.
+Nada é instalado sem você pedir — cada treino tem seu botão de instalar.
+
+| Treino | Nesta máquina (RTX 3060) | Consolidação |
+|---|---|---|
+| Fatos em texto (LoRA) | ✅ roda até sem GPU | 3 tentativas limpas — automática |
+| Estilo de imagem (SD 1.5) | ✅ 3 min / 200 passos | você aprova as amostras |
+| Personagem ou objeto | ✅ mesma base, legenda com gatilho | você aprova |
+| Estilo em SDXL | ✅ pesado: 30 passos ≈ 5 min | você aprova |
+| Classificador de imagem | ✅ segundos | acerto em imagens nunca vistas — automática |
+| Imagem → 3D | 🕓 falta compilador C (`torchmcubes`) | — |
+| Fotos → 3D (Gaussian Splatting) | 🕓 falta COLMAP (precisa de root) | — |
+| Clonar voz | 🕓 não implementado; cuidado com a licença | — |
+| Treinar vídeo | ✕ cluster, não PC | — |
+| Gerador 3D do zero (tipo Meshy) | ✕ ~10 TB de dados e GPU de datacenter | — |
+
+**A consolidação muda com o tipo.** Onde existe resposta certa (texto, classificador) a
+máquina decide sozinha. Onde não existe (estilo, personagem) **você** decide, no chat,
+olhando o que saiu — e a sua decisão fica gravada com data. Inventar um número ali seria
+mentira; deixar tudo "talvez" seria inútil.
+
+Só o que está consolidado aparece no **Exportar**, e cada tipo sai com o seu próprio README
+de uso (LoRA para Automatic1111/ComfyUI, classificador com o código de carregar).
+
+## Testar no chat
+
+O Chat tem duas abas: **Texto** conversa com o modelo; **Imagem** gera com um estilo
+treinado, com controle de força, e traz os botões *O estilo pegou* / *Não pegou* — é essa
+resposta que consolida o treino de imagem.
 
 ## Treinar um estilo de imagem
 

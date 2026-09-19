@@ -5,7 +5,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from agentepc import coletor, crawler, export, formatter, health, imagem, lotes, memory, ollama, provision, sistemas, train
+from agentepc import (capacidades, classificador, coletor, consolidado, crawler, export,
+                      formatter, health, imagem, lotes, memory, ollama, provision, sistemas,
+                      train)
 from agentepc.config import ROOT
 
 WEB = ROOT / "web"
@@ -64,6 +66,21 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/fix-job":
             self._json(200, formatter.conserto_status())
+            return
+        if path == "/api/consolidados":
+            self._json(200, {"itens": consolidado.listar(), "regras": consolidado.REGRAS})
+            return
+        if path == "/api/gerar-job":
+            self._json(200, imagem.geracao_status())
+            return
+        if path == "/api/instalar-job":
+            self._json(200, capacidades.instalacao_status())
+            return
+        if path == "/api/capacidades":
+            self._json(200, capacidades.avaliar())
+            return
+        if path == "/api/classificador":
+            self._json(200, classificador.status())
             return
         if path == "/api/imagens":
             self._json(200, {"coleta": coletor.status(), "treino": imagem.status()})
@@ -265,11 +282,42 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/colecao-delete":
                 self._json(200, coletor.apagar(self._read_json().get("id") or ""))
                 return
+            if path == "/api/instalar-capacidade":
+                self._json(200, capacidades.instalar(self._read_json().get("id") or ""))
+                return
+            if path == "/api/aprovar":
+                b = self._read_json()
+                self._json(200, consolidado.aprovar(b.get("tipo") or "imagem", b.get("id") or "",
+                                                    bool(b.get("aprovado")), b.get("nota") or ""))
+                return
+            if path == "/api/gerar":
+                b = self._read_json()
+                self._json(200, imagem.gerar(b.get("pedido") or "", b.get("estilo") or "",
+                                             int(b.get("passos") or 25), float(b.get("forca") or 0.9)))
+                return
             if path == "/api/imagem-treinar":
                 b = self._read_json()
                 self._json(200, imagem.treinar(
                     b.get("colecao") or "", b.get("gatilho") or "", int(b.get("passos") or 600),
-                    b.get("nome") or "", int(b.get("resolucao") or 512)))
+                    b.get("nome") or "", int(b.get("resolucao") or 512),
+                    tipo=b.get("tipo") or "estilo", base=b.get("base") or "sd15"))
+                return
+            if path == "/api/classificador-treinar":
+                b = self._read_json()
+                self._json(200, classificador.treinar(
+                    b.get("conjunto") or "", int(b.get("epocas") or 8), b.get("nome") or "",
+                    float(b.get("limiar") or 0.9)))
+                return
+            if path == "/api/classificador-stop":
+                self._json(200, classificador.parar())
+                return
+            if path == "/api/classificador-importar":
+                b = self._read_json()
+                self._json(200, classificador.importar(
+                    b.get("conjunto") or "", b.get("classe") or "", b.get("colecao") or ""))
+                return
+            if path == "/api/classificador-delete":
+                self._json(200, classificador.apagar(self._read_json().get("id") or ""))
                 return
             if path == "/api/imagem-stop":
                 self._json(200, imagem.parar())

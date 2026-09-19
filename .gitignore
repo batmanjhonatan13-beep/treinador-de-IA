@@ -15,3 +15,7 @@ __pycache__/
 .DS_Store
 data/imagens/
 data/imagem-lora/
+data/classes/
+data/classificadores/
+data/geradas/
+data/aprovacoes.json

@@ -31,6 +31,13 @@
     </section>
 
     <section class="card">
+      <h2>Treinos disponíveis <span class="sub">(cada um instala só o que precisa)</span></h2>
+      <p id="capNota" class="note"></p>
+      <ul id="capacidades" class="runs"></ul>
+      <div id="instalaLog"></div>
+    </section>
+
+    <section class="card">
       <h2>Modelos <span class="sub">(o que cabe nesta máquina)</span></h2>
       <p class="note">“treina na memória” = LoRA sem placa de vídeo; é mais lento, mas funciona. Os outros precisam de GPU para treinar.</p>
       <ul id="modelos" class="runs"></ul>
@@ -240,6 +247,71 @@
         r.liberado_gb ? r.liberado_gb + " GB liberados" : "nada sobrando";
       saude();
     };
+
+    const SIT = { disponivel: "✅", instalar: "⬇️", hardware: "🚫", planejado: "🕓", impossivel: "✕" };
+
+    async function pintaCapacidades() {
+      const j = await api("/api/capacidades");
+      const inst = await api("/api/instalar-job");
+      document.getElementById("capNota").textContent =
+        "Esta máquina: " + (j.maquina.gpu || "sem GPU") +
+        (j.maquina.vram_gb ? " · " + j.maquina.vram_gb + " GB de VRAM" : "") +
+        " · " + j.maquina.ram_gb + " GB de RAM";
+      const ul = document.getElementById("capacidades");
+      ul.innerHTML = "";
+      j.itens.forEach((i) => {
+        const li = document.createElement("li");
+        const bloco = document.createElement("div");
+        const tit = document.createElement("div");
+        tit.textContent = (SIT[i.situacao] || "") + " " + i.nome;
+        const faz = document.createElement("div");
+        faz.className = "note";
+        faz.textContent = i.faz + " · prova: " + i.prova +
+          (i.vram_gb ? " · pede " + i.vram_gb + " GB de VRAM" : "");
+        const motivo = document.createElement("div");
+        motivo.className = "note";
+        motivo.textContent = i.motivo || "";
+        bloco.append(tit, faz, motivo);
+        li.appendChild(bloco);
+        const acoes = document.createElement("span");
+        if (i.instalavel) {
+          const b = document.createElement("button");
+          b.className = "small primary"; b.type = "button";
+          b.textContent = "Instalar";
+          b.disabled = inst.state === "running";
+          b.onclick = async () => {
+            const r = await api("/api/instalar-capacidade", { id: i.id });
+            if (!r.accepted) { alert(r.reason); return; }
+            vigiaInstala();
+          };
+          acoes.appendChild(b);
+        } else if (i.situacao === "disponivel" && i.pagina) {
+          const a = document.createElement("a");
+          a.href = i.pagina;
+          const b = document.createElement("button");
+          b.className = "small"; b.type = "button"; b.textContent = "Abrir";
+          a.appendChild(b); acoes.appendChild(a);
+        }
+        li.appendChild(acoes);
+        ul.appendChild(li);
+      });
+      const box = document.getElementById("instalaLog");
+      box.innerHTML = "";
+      (inst.linhas || []).slice(-6).forEach((l) => appendLine("instalaLog", l,
+        "msg sys" + (/erro/i.test(l) ? " bad" : "")));
+    }
+
+    let pollInstala = null;
+    function vigiaInstala() {
+      if (pollInstala) return;
+      pollInstala = setInterval(async () => {
+        const inst = await api("/api/instalar-job");
+        await pintaCapacidades();
+        if (inst.state !== "running") { clearInterval(pollInstala); pollInstala = null; }
+      }, 2000);
+    }
+    setInterval(() => pintaCapacidades().catch(() => {}), 8000);
+    pintaCapacidades().catch(() => {});
 
     saude().catch((e) => { document.getElementById("resumo").textContent = "erro: " + e.message; });
     setInterval(() => saude().catch(() => {}), 20000);

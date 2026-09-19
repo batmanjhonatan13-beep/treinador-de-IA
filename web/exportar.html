@@ -20,7 +20,7 @@
     <header>
       <div>
         <h1>Exportar</h1>
-        <div class="sub">Monta uma pasta com o conhecimento treinado + o script que o roda em qualquer máquina. Só entra aqui o que está consolidado (🟢): o modelo acerta a prova inteira sem consulta.</div>
+        <div class="sub">Monta uma pasta com o conhecimento treinado + o script que o roda em qualquer máquina. Só entra aqui o que está consolidado (🟢) — texto pela prova automática, classificador pelo acerto em imagens nunca vistas, estilo de imagem pelo seu julgamento.</div>
       </div>
     </header>
 
@@ -60,7 +60,8 @@
       (j.runs || []).slice().reverse().forEach((r) => {
         const o = document.createElement("option");
         o.value = r.id;
-        o.textContent = "🟢 " + r.file + " · " + (r.facts || "?") + " linhas · modelo " + (r.modelo || r.base_hf || "?");
+        o.textContent = "🟢 [" + (r.tipo || "texto") + "] " + r.file +
+          (r.facts ? " · " + r.facts + " linhas" : "") + " · " + (r.modelo || r.base_hf || "?");
         sel.appendChild(o);
       });
       if (!sel.options.length) {

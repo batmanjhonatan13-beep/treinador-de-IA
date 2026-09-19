@@ -182,8 +182,12 @@ def _base_snapshot() -> Path | None:
 _job: dict = {"state": "idle", "lines": [], "name": "", "path": ""}
 
 
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
 def _say(msg: str) -> None:
-    _job["lines"].append({"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "msg": msg})
+    _job["lines"].append({"ts": _now(), "msg": msg})
 
 
 def _size(path: Path) -> int:
@@ -203,13 +207,79 @@ def listing() -> list[dict]:
 
 
 def prontos() -> list[dict]:
-    """So aparece no export o treino que fechou 100% na prova sem consulta."""
+    """So entra no pacote o que esta consolidado — cada tipo pela sua regra."""
+    from agentepc import consolidado
+
     keys = ("id", "ts", "file", "facts", "passed", "total", "tested", "size", "base_hf", "modelo")
-    return [{k: r.get(k) for k in keys} for r in train.history(100) if r.get("consolidated") and r.get("snapshot")]
+    saida = [{**{k: r.get(k) for k in keys}, "tipo": "texto"}
+             for r in train.history(100) if r.get("consolidated") and r.get("snapshot")]
+    for item in consolidado.consolidados():
+        if item["tipo"] == "texto":
+            continue
+        saida.append({"id": item["id"], "tipo": item["tipo"], "file": item["nome"],
+                      "ts": "", "facts": None, "passed": None, "total": None,
+                      "modelo": item.get("modelo", ""), "detalhe": item["detalhe"]})
+    return saida
 
 
 def status() -> dict:
     return {**_job, "items": listing(), "runs": prontos(), "base_local": _base_snapshot() is not None}
+
+
+def _empacota_outro(item: dict, dest: Path, sistema: str) -> dict:
+    """Pacote de um treino que nao e de texto: os pesos + como usar."""
+    from agentepc import classificador, imagem, sistemas
+
+    if item["tipo"] == "imagem":
+        origem = imagem.saida_raiz() / item["id"]
+        leia = f"""# {item['id']}
+
+Estilo treinado (LoRA) para **{item.get('modelo') or 'Stable Diffusion'}**.
+
+O arquivo `pytorch_lora_weights.safetensors` entra no Automatic1111 (pasta `models/Lora`),
+no ComfyUI ou em qualquer lugar que aceite LoRA de fora. Chame pelo gatilho anotado em
+`treino.json`.
+
+Consolidado por julgamento seu: {item['detalhe']}
+"""
+    elif item["tipo"] == "classificador":
+        origem = classificador.saida_raiz() / item["id"]
+        leia = f"""# {item['id']}
+
+Classificador de imagem (resnet18). `modelo.pt` traz os pesos e a lista de categorias.
+
+```python
+import torch
+from torchvision import models, transforms
+from PIL import Image
+
+d = torch.load("modelo.pt", map_location="cpu")
+m = models.resnet18()
+m.fc = torch.nn.Linear(m.fc.in_features, len(d["classes"]))
+m.load_state_dict(d["pesos"]); m.eval()
+
+prep = transforms.Compose([
+    transforms.Resize(256), transforms.CenterCrop(224), transforms.ToTensor(),
+    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
+x = prep(Image.open("foto.jpg").convert("RGB")).unsqueeze(0)
+print(d["classes"][m(x).argmax(1).item()])
+```
+
+Prova: {item['detalhe']}
+"""
+    else:
+        raise RuntimeError("tipo sem empacotamento")
+    if not origem.is_dir():
+        raise RuntimeError("os arquivos desse treino nao foram encontrados")
+    shutil.copytree(origem, dest / "modelo", ignore=shutil.ignore_patterns("runs"))
+    (dest / "README.md").write_text(leia, encoding="utf-8")
+    (dest / "pacote.json").write_text(json.dumps({
+        "tipo": item["tipo"], "id": item["id"], "detalhe": item["detalhe"],
+        "modelo": item.get("modelo", ""), "sistema": sistema,
+        "sistema_nome": (sistemas.por_id(sistema) or {}).get("nome", sistema),
+        "criado": _now(),
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {"ok": True}
 
 
 def start(run_id: str, name: str = "", include_base: bool = False, archive: bool = True,
@@ -218,10 +288,37 @@ def start(run_id: str, name: str = "", include_base: bool = False, archive: bool
         return {"accepted": False, "reason": "ja tem um pacote sendo montado"}
     if train.job_status()["state"] == "running":
         return {"accepted": False, "reason": "treino em andamento; espere ou pare"}
+    outros = {i["id"]: i for i in prontos() if i.get("tipo") != "texto"}
     rows = {r["id"]: r for r in train._rows() if r.get("snapshot")}
     row = rows.get(run_id)
-    if not row:
+    if not row and run_id not in outros:
         return {"accepted": False, "reason": "esse treino nao tem pesos guardados"}
+    if not row:
+        item = outros[run_id]
+        name = re.sub(r"[^a-z0-9_-]+", "-", (name or item["id"]).lower()).strip("-")
+        dest = _jobs_dir() / name
+        if dest.exists():
+            return {"accepted": False, "reason": f"ja existe um pacote chamado {name}"}
+        _job.update({"state": "running", "lines": [], "name": name, "path": str(dest)})
+
+        def _outro() -> None:
+            try:
+                dest.mkdir(parents=True)
+                _say(f"empacotando {item['tipo']}: {item['id']}")
+                _empacota_outro(item, dest, sistema)
+                if archive:
+                    _say("compactando para upload")
+                    with tarfile.open(_jobs_dir() / f"{name}.tar.gz", "w:gz") as tar:
+                        tar.add(dest, arcname=name)
+                _job["state"] = "done"
+                _say(f"pronto ({_size(dest) / 1e6:.0f} MB) — copie a pasta para onde quiser")
+            except Exception as exc:
+                shutil.rmtree(dest, ignore_errors=True)
+                _job["state"] = "error"
+                _say(f"erro: {exc}")
+
+        threading.Thread(target=_outro, name="export-outro", daemon=True).start()
+        return {"accepted": True, "name": name}
     if not row.get("consolidated"):
         return {
             "accepted": False,
