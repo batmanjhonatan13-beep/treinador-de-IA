@@ -28,7 +28,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from agentepc import ollama
+from agentepc import lotes, ollama
 from agentepc.config import load, resolve
 
 UA = "Mozilla/5.0 (compatible; agente-pc/1.0; +local training data collector)"
@@ -40,7 +40,7 @@ SKIP_EXT = (".pdf", ".zip", ".tar", ".gz", ".png", ".jpg", ".jpeg", ".gif", ".sv
 _job: dict = {
     "state": "idle", "url": "", "pages": 0, "target": 0, "images": 0, "queue": 0, "externas": 0,
     "chars": 0, "file": "", "cache": "", "lines": [], "paginas": [], "visited": [],
-    "fase": "", "selecionadas": 0,
+    "fase": "", "selecionadas": 0, "lote": "", "terminou": False,
 }
 
 
@@ -175,6 +175,20 @@ def commands(text: str) -> list[str]:
     return saida[:200]
 
 
+def normaliza(url: str) -> str:
+    """Mesma pagina por caminhos diferentes vira um endereco so.
+
+    Tira a ancora, o index.html e a barra final: /tutorial/, /tutorial e
+    /tutorial/index.html sao a mesma leitura.
+    """
+    url = url.split("#")[0].strip()
+    partes = urllib.parse.urlsplit(url)
+    caminho = re.sub(r"/index\.html?$", "/", partes.path)
+    if caminho.endswith("/") and len(caminho) > 1:
+        caminho = caminho[:-1]
+    return urllib.parse.urlunsplit((partes.scheme, partes.netloc, caminho or "/", partes.query, ""))
+
+
 def _termos(texto: str) -> list[str]:
     """Aceita termos separados por virgula, ponto-e-virgula ou quebra de linha."""
     return [x.strip() for x in re.split(r"[,;\n]", texto or "") if x.strip()]
@@ -199,7 +213,7 @@ def _links(page: str, base: str, root: str, externos: bool = False) -> list[tupl
     host = urllib.parse.urlparse(root).netloc
     found = []
     for href in re.findall(r'(?is)<a\b[^>]*\bhref\s*=\s*["\']([^"\']+)', page):
-        url = urllib.parse.urljoin(base, html.unescape(href)).split("#")[0].rstrip("/")
+        url = normaliza(urllib.parse.urljoin(base, html.unescape(href)))
         parsed = urllib.parse.urlparse(url)
         if parsed.scheme not in ("http", "https") or url.lower().endswith(SKIP_EXT):
             continue
@@ -274,10 +288,14 @@ def _cache_path(base: Path) -> Path:
 
 
 def descobrir(url: str, browser: bool = True, externos: bool = False, max_pages: int = 0,
-              incluir: str = "", excluir: str = "", so_abaixo: bool = True) -> dict:
+              incluir: str = "", excluir: str = "", so_abaixo: bool = True, assunto: str = "") -> dict:
     """Anda a arvore e lista as paginas. Nao monta arquivo de treino ainda."""
     if _job["state"] == "running":
         return {"accepted": False, "reason": "ja tem uma busca rodando"}
+    from agentepc import formatter
+
+    if formatter.status()["state"] in ("running", "comandos", "parando"):
+        return {"accepted": False, "reason": "tem um lote sendo formatado; espere ou pare a formatacao"}
     url = (url or "").strip()
     if not re.match(r"^https?://", url):
         return {"accepted": False, "reason": "informe a URL inteira, com http:// ou https://"}
@@ -291,14 +309,15 @@ def descobrir(url: str, browser: bool = True, externos: bool = False, max_pages:
     # "so abaixo deste caminho" resolve o caso das versoes: a raiz
     # https://docs.python.org/pt-br/3/ nao deixa entrar /pt-br/3.13/
     prefixo = raiz.rstrip("/") if so_abaixo else ""
-    host = urllib.parse.urlparse(url).netloc.replace(":", "-")
-    destino = out_dir() / f"{host}-{time.strftime('%Y%m%d-%H%M%S')}.md"
+    lote, destino = lotes.caminho_livre(lotes.nome_para(assunto, url))
     cache = _cache_path(destino)
     cache.write_text("", encoding="utf-8")
+    lotes.gravar_meta(lote, {"nome": lote, "assunto": assunto, "url": url, "paginas": 0, "chars": 0})
     _job.update({
         "state": "running", "fase": "descobrindo", "url": url, "pages": 0, "target": max_pages,
         "images": 0, "queue": 1, "externas": 0, "chars": 0, "file": str(destino),
         "cache": str(cache), "lines": [], "paginas": [], "visited": [], "selecionadas": 0,
+        "lote": lote, "terminou": False,
     })
 
     def _go() -> None:
@@ -311,7 +330,7 @@ def descobrir(url: str, browser: bool = True, externos: bool = False, max_pages:
                 _say(f"so endereco contendo: {', '.join(termos_sim)}")
             if termos_nao:
                 _say(f"pulando endereco com: {', '.join(termos_nao)}")
-            fila, vistos, conteudos = [(raiz, False)], {raiz}, set()
+            fila, vistos, conteudos = [(raiz, False)], {normaliza(raiz)}, set()
             espera = float((load().get("learn") or {}).get("crawl_delay") or 0.5)
             t0 = time.time()
             with Path(_job["cache"]).open("a", encoding="utf-8") as fh:
@@ -357,7 +376,11 @@ def descobrir(url: str, browser: bool = True, externos: bool = False, max_pages:
             _job["queue"] = len(fila)
             _job["state"] = "done"
             _job["fase"] = "descoberto"
-            _say(f"achei {len(_job['paginas'])} pagina(s). Marque as que quer e clique em Extrair.")
+            _job["terminou"] = True
+            lotes.gravar_meta(_job["lote"], {"paginas": len(_job["paginas"]), "chars": _job["chars"]})
+            _say(f"BUSCA CONCLUIDA — {len(_job['paginas'])} pagina(s) encontradas"
+                 + (f", {len(fila)} link(s) ficaram de fora pelo teto" if fila else "")
+                 + ". Marque as que quer e clique em Extrair.")
         except Exception as exc:
             _job["state"] = "error"
             _say(f"erro: {exc}")
@@ -378,7 +401,7 @@ def montar(urls: list[str], imagens: bool = True) -> dict:
         return {"accepted": False, "reason": "marque ao menos uma pagina"}
     vmodel = vision_model() if imagens else ""
     _job.update({"state": "running", "fase": "montando", "images": 0,
-                 "selecionadas": len(escolhidas), "lines": []})
+                 "selecionadas": len(escolhidas), "lines": [], "terminou": False})
 
     def _go() -> None:
         try:
@@ -409,6 +432,9 @@ def montar(urls: list[str], imagens: bool = True) -> dict:
             _job["chars"] = destino.stat().st_size
             _job["state"] = "done"
             _job["fase"] = "montado"
+            _job["terminou"] = True
+            lotes.gravar_meta(_job["lote"], {"paginas": feitas, "chars": _job["chars"],
+                                             "imagens": _job["images"]})
             _say(f"pronto: {feitas} pagina(s), {_job['chars'] / 1000:.0f} mil caracteres, "
                  f"{_job['images']} imagem(ns) -> {destino}")
         except Exception as exc:

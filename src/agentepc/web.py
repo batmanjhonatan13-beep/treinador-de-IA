@@ -5,7 +5,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from agentepc import crawler, export, formatter, health, memory, ollama, provision, sistemas, train
+from agentepc import crawler, export, formatter, health, lotes, memory, ollama, provision, sistemas, train
 from agentepc.config import ROOT
 
 WEB = ROOT / "web"
@@ -61,6 +61,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/prepare-job":
             self._json(200, provision.status())
+            return
+        if path == "/api/fix-job":
+            self._json(200, formatter.conserto_status())
+            return
+        if path == "/api/lotes":
+            self._json(200, {"itens": lotes.listar()})
             return
         if path == "/api/crawl-job":
             self._json(200, crawler.status())
@@ -190,7 +196,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, crawler.descobrir(
                     b.get("url") or "", bool(b.get("browser", True)), bool(b.get("externos")),
                     int(b.get("pages") or 0), b.get("incluir") or "", b.get("excluir") or "",
-                    bool(b.get("so_abaixo", True)),
+                    bool(b.get("so_abaixo", True)), b.get("assunto") or "",
                 ))
                 return
             if path == "/api/crawl-build":
@@ -216,10 +222,18 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/format":
                 b = self._read_json()
-                self._json(200, formatter.start(b.get("raw") or "", b.get("subject") or "", b.get("source_file") or ""))
+                self._json(200, formatter.start(b.get("raw") or "", b.get("subject") or "",
+                                                b.get("source_file") or "", b.get("lote") or ""))
                 return
             if path == "/api/format-stop":
                 self._json(200, formatter.stop())
+                return
+            if path == "/api/fix":
+                b = self._read_json()
+                self._json(200, formatter.corrigir(b.get("text") or "", b.get("subject") or ""))
+                return
+            if path == "/api/lote-delete":
+                self._json(200, lotes.apagar(self._read_json().get("id") or ""))
                 return
             if path == "/api/lint":
                 self._json(200, {"warnings": formatter.lint(self._read_json().get("text") or "")})

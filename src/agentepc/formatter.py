@@ -5,7 +5,7 @@ import threading
 import time
 from pathlib import Path
 
-from agentepc import ollama
+from agentepc import lotes, ollama
 from agentepc.config import load, resolve
 
 DEFAULT_SKILL = """# Skill: montar arquivo de treino e de consulta
@@ -30,9 +30,14 @@ Voce transforma dados brutos em linhas de fatos. O MESMO arquivo serve para dois
 - Comando, flag e caminho vao COPIADOS, sem traduzir: "- O comando `docker run -d` sobe o container em segundo plano".
 - Uma linha por comando, flag ou conceito. Nao resuma a pagina inteira numa linha.
 - O sujeito e a ferramenta ("Docker", "o comando docker ps"), nao "voce" nem "o usuario".
-- GUARDE O CONTEXTO na propria linha: sistema operacional, versao, distribuicao. Uma doc fala
-  de Windows, Mac e Linux na mesma pagina; sem isso o fato fica errado.
-  Ex.: "- No Windows, o Docker Desktop exige o WSL 2 habilitado".
+- GUARDE O CONTEXTO na propria linha: versao, modulo, sistema operacional, tipo de mudanca.
+  Voce recebe "Secao:" com a trilha de titulos — use o que ela diz. Sem isso o fato fica solto.
+  Ex.: Secao "O que ha de novo no Python 3.14 > Removidos > argparse" e o item "Remove os
+  parametros type, choices e metavar de BooleanOptionalAction" viram:
+  "- No Python 3.14 foram removidos os parametros type, choices e metavar de
+  `argparse.BooleanOptionalAction`, descontinuados desde o Python 3.12".
+- Fato longo pode ficar longo. Nao corte comando, nome de funcao nem a explicacao que da
+  sentido; e melhor uma linha comprida e completa do que tres pela metade.
 - Se a pagina fala de outra ferramenta junto, o fato pode ser sobre ela; escreva o nome dela.
 - Linha que comeca com "[imagem]" descreve uma figura: vire fato do que a figura ensina.
 - Ignore menu, indice, rodape, "edite esta pagina", cookies e link de navegacao.
@@ -61,7 +66,9 @@ Linhas:
 """
 
 _job: dict = {"state": "idle", "done": 0, "total": 0, "text": "", "error": "", "dropped": 0,
-              "copied": 0, "facts": 0, "file": "", "big": False, "skipped": 0, "last_error": "", "cmds": [0, 0], "invented": 0}
+              "copied": 0, "facts": 0, "file": "", "big": False, "skipped": 0, "last_error": "",
+              "cmds": [0, 0], "invented": 0, "lote": "", "assunto": "", "terminou": False,
+              "apagou_bruto": False}
 
 
 def skill_path():
@@ -107,8 +114,15 @@ def grounded(line: str, fonte: str) -> bool:
             continue
         marcas.append(bruto)
     for marca in marcas:
-        if _norm(marca) and _norm(marca) not in n_fonte:
-            return False
+        n_marca = _norm(marca)
+        if not n_marca or n_marca in n_fonte:
+            continue
+        # o modelo qualifica o nome com o modulo da secao ("argparse.BooleanOptionalAction");
+        # isso vem do texto, so que em pedacos. Vale se cada pedaco estiver la.
+        partes = [w for w in re.split(r"[^a-z0-9]+", n_marca) if len(w) > 2]
+        if partes and all(w in n_fonte for w in partes):
+            continue
+        return False
     if marcas:
         return True
     # sem nada distintivo, sobra a comparacao por palavras
@@ -145,10 +159,10 @@ def lint(text: str) -> list[str]:
         body = line[2:]
         if re.search(r"\b(eu|meu|minha|meus|minhas|nosso|nossa)\b", body.lower()):
             out.append(f"linha {n}: primeira pessoa; troque pelo nome (o modelo se confunde)")
+        # linha longa NAO e defeito: comando e explicacao tecnica sao compridos mesmo,
+        # e o modelo aprende a linha inteira. So o que nao chega a ser um fato incomoda.
         if len(body.split()) < 3:
-            out.append(f"linha {n}: muito curta, sem sujeito claro")
-        if len(body.split()) > 40:
-            out.append(f"linha {n}: muito longa; quebre em fatos menores")
+            out.append(f"linha {n}: curta demais para virar pergunta ({body[:40]})")
         if low in seen:
             out.append(f"linha {n}: repetida")
         seen.add(low)
@@ -157,19 +171,136 @@ def lint(text: str) -> list[str]:
     return out
 
 
-def _chunks(raw: str, size: int = 1200) -> list[str]:
-    parts, cur = [], ""
-    for para in re.split(r"\n\s*\n|\n", raw):
-        para = para.strip()
-        if not para:
+_conserto: dict = {"state": "idle", "done": 0, "total": 0, "text": "", "mudou": 0, "tirou": 0}
+
+
+def conserto_status() -> dict:
+    return dict(_conserto)
+
+
+def _curta(linha: str) -> bool:
+    return len(linha[2:].split()) < 3
+
+
+def _primeira_pessoa(linha: str) -> bool:
+    return bool(re.search(r"\b(eu|meu|minha|meus|minhas|nosso|nossa)\b", linha.lower()))
+
+
+def corrigir(texto: str, subject: str = "") -> dict:
+    """Arruma o que o Conferir apontou: tira o que nao e fato e reescreve a 1a pessoa.
+
+    Nao encurta linha comprida — comando e explicacao tecnica sao assim mesmo.
+    """
+    if _conserto["state"] == "running":
+        return {"accepted": False, "reason": "ja estou consertando"}
+    linhas = (texto or "").splitlines()
+    if not linhas:
+        return {"accepted": False, "reason": "nada para consertar"}
+    _conserto.update({"state": "running", "done": 0, "total": len(linhas), "text": "",
+                      "mudou": 0, "tirou": 0})
+    skill = skill_path().read_text(encoding="utf-8")
+
+    def _go() -> None:
+        try:
+            saida: list[str] = []
+            vistos: set[str] = set()
+            for linha in linhas:
+                _conserto["done"] += 1
+                bruta = linha.rstrip()
+                if not bruta.startswith("- "):
+                    saida.append(bruta)          # titulo e linha em branco ficam
+                    continue
+                chave = _norm(bruta)
+                if chave in vistos or _curta(bruta) or is_secret(bruta):
+                    _conserto["tirou"] += 1
+                    continue
+                vistos.add(chave)
+                if _primeira_pessoa(bruta):
+                    nova = _reescreve(bruta, subject, skill)
+                    if nova and not _primeira_pessoa(nova):
+                        _conserto["mudou"] += 1
+                        saida.append(nova)
+                        continue
+                    _conserto["tirou"] += 1
+                    continue
+                saida.append(bruta)
+            _conserto["text"] = "\n".join(saida).rstrip() + "\n"
+            _conserto["state"] = "done"
+        except Exception as exc:
+            _conserto["state"] = "error"
+            _conserto["text"] = str(exc)
+
+    threading.Thread(target=_go, name="conserto", daemon=True).start()
+    return {"accepted": True, "linhas": len(linhas)}
+
+
+def _reescreve(linha: str, subject: str, skill: str) -> str:
+    alvo = subject or "o sujeito do texto"
+    try:
+        data = ollama.request(
+            "/api/chat",
+            {
+                "model": ollama.base_name(),
+                "stream": False,
+                "keep_alive": "10m",
+                "options": {"temperature": 0, "num_predict": 160},
+                "messages": [
+                    {"role": "system", "content": skill},
+                    {"role": "user", "content": (
+                        f"Reescreva esta linha em terceira pessoa, trocando eu/meu por {alvo}. "
+                        f"Mantenha comando e detalhe tecnico exatamente como estao. "
+                        f"Responda so a linha, comecando com '- '.\n{linha}"
+                    )},
+                ],
+            },
+            timeout=120,
+        )
+        for l in ((data.get("message") or {}).get("content") or "").splitlines():
+            if l.strip().startswith("- "):
+                return l.strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _chunks(raw: str, size: int = 1200) -> list[tuple[str, str]]:
+    """Devolve (trecho, trilha de titulos).
+
+    O fato solto perde o assunto: o item "Remove os parametros type, choices e metavar"
+    so quer dizer alguma coisa junto de "O que ha de novo no Python 3.14 > Removidos >
+    argparse". A trilha viaja com o trecho para o fato nascer inteiro.
+    """
+    partes: list[tuple[str, str]] = []
+    cur, trilha_ini = "", []
+    pilha: list[tuple[int, str]] = []   # (nivel, titulo): o nivel decide quem sai
+    for linha in raw.splitlines():
+        p = linha.strip()
+        if not p:
             continue
-        if cur and len(cur) + len(para) > size:
-            parts.append(cur)
+        titulo = re.match(r"^(#{1,6})\s+(.+)$", p)
+        if titulo:
+            nivel = len(titulo.group(1))
+            # um titulo do mesmo nivel troca o anterior; um mais fundo entra embaixo
+            pilha = [(n, x) for n, x in pilha if n < nivel] + [(nivel, titulo.group(2).strip())]
+            trilha = [x for _, x in pilha]
+        # titulo de secao fecha o trecho anterior: assim cada pedaco pertence a uma secao
+        # so, e a trilha que viaja com ele e exatamente a dele
+        quebra = (titulo and len(titulo.group(1)) >= 3 and cur) or (cur and len(cur) + len(p) > size)
+        if quebra:
+            partes.append((cur, " > ".join(trilha_ini)))
             cur = ""
-        cur = (cur + "\n" + para).strip()
+        if not cur:
+            trilha_ini = [x for _, x in pilha]
+        cur = (cur + "\n" + p).strip()
     if cur:
-        parts.append(cur)
-    return parts
+        partes.append((cur, " > ".join(trilha_ini)))
+    # pedaco que so tem titulo/fonte nao carrega fato nenhum; pedir um so gera invencao
+    def _tem_corpo(trecho: str) -> bool:
+        corpo = [l for l in trecho.splitlines()
+                 if l.strip() and not l.lstrip().startswith("#") and not l.startswith("fonte:")]
+        return sum(len(l) for l in corpo) >= 80
+
+    return [(c, tr) for c, tr in partes if _tem_corpo(c)]
 
 
 def status() -> dict:
@@ -185,10 +316,21 @@ def stop() -> dict:
 PREVIEW_MAX = 40000  # acima disso a pagina mostra amostra e salva direto do disco
 
 
-def start(raw: str = "", subject: str = "", source_file: str = "") -> dict:
-    """Texto colado ou arquivo de extracao. Arquivo grande e lido em lotes, do disco."""
+def start(raw: str = "", subject: str = "", source_file: str = "", lote: str = "") -> dict:
+    """Texto colado ou um lote de extracao. Um de cada vez, e o estado vive no servidor."""
     if _job["state"] in ("running", "parando", "comandos"):
-        return {"accepted": False, "reason": "ja formatando"}
+        return {"accepted": False, "reason": "ja tem um lote sendo formatado"}
+    from agentepc import crawler
+
+    if crawler.status()["state"] == "running":
+        return {"accepted": False, "reason": "tem uma busca rodando; espere ou pare a busca"}
+    if lote and not source_file:
+        meta = lotes.ler_meta(lote)
+        alvo = lotes.pasta() / f"{lote}.md"
+        if not alvo.exists():
+            return {"accepted": False, "reason": "esse lote nao tem texto extraido"}
+        source_file = str(alvo)
+        subject = subject or meta.get("assunto") or meta.get("nome") or ""
     if source_file:
         path = Path(source_file)
         if not path.is_absolute():
@@ -201,21 +343,29 @@ def start(raw: str = "", subject: str = "", source_file: str = "") -> dict:
         return {"accepted": False, "reason": "cole os dados ou extraia um site antes"}
     subject = (subject or "").strip() or "(descubra no texto quem e o sujeito principal e escreva o nome dele em toda linha)"
     chunks = _chunks(raw)
-    out_path = resolve("data/extracoes") / (
-        (Path(source_file).stem + "-fatos.md") if source_file else f"colado-{int(time.time())}-fatos.md"
-    )
+    base = lote or (Path(source_file).stem if source_file else f"colado-{int(time.time())}")
+    out_path = lotes.pasta() / f"{base}-fatos.md"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     cabecalho = f"# Fatos{(' sobre ' + subject) if not subject.startswith('(') else ''}\n\n"
     out_path.write_text(cabecalho, encoding="utf-8")
     _job.update({"state": "running", "done": 0, "total": len(chunks), "text": "", "error": "",
                  "dropped": 0, "copied": 0, "facts": 0, "file": str(out_path), "big": False,
-                 "skipped": 0, "last_error": "", "cmds": [0, 0], "invented": 0})
+                 "skipped": 0, "last_error": "", "cmds": [0, 0], "invented": 0,
+                 "lote": lote or Path(source_file).stem if source_file else "",
+                 "assunto": subject, "terminou": False})
     skill = skill_path().read_text(encoding="utf-8")
     # o modelo pequeno as vezes copia a resposta do exemplo; essas linhas nao vieram do texto
     exemplos = {_norm(ln) for ln in skill.splitlines() if ln.strip().startswith("- ")}
 
-    def _ask(chunk: str, insistir: bool) -> str:
-        pedido = f"Sujeito: {subject}\nTexto: {chunk}\nLinhas:"
+    def _ask(chunk: str, insistir: bool, contexto: str = "") -> str:
+        cabeca = f"Secao: {contexto}\n" if contexto else ""
+        pedido = (
+            f"Sujeito: {subject}\n{cabeca}"
+            "REGRA: uma linha para CADA item do texto. Comece pelo contexto da secao "
+            "(versao, modulo, sistema) e depois o fato completo, com os nomes tecnicos "
+            "exatamente como aparecem.\n"
+            f"Texto: {chunk}\nLinhas:"
+        )
         if insistir:
             pedido = (
                 "Este trecho TEM fatos. Extraia pelo menos um por titulo ou comando. Nao responda SEM FATOS.\n"
@@ -238,11 +388,11 @@ def start(raw: str = "", subject: str = "", source_file: str = "") -> dict:
         )
         return (data.get("message") or {}).get("content") or ""
 
-    def _ask_safe(chunk: str, insistir: bool) -> str:
+    def _ask_safe(chunk: str, insistir: bool, contexto: str = "") -> str:
         """Um lote problematico e pulado; num site inteiro isso nao pode perder o resto."""
         for tentativa in (1, 2):
             try:
-                return _ask(chunk, insistir)
+                return _ask(chunk, insistir, contexto)
             except Exception as exc:
                 if tentativa == 2:
                     _job["skipped"] += 1
@@ -288,13 +438,13 @@ def start(raw: str = "", subject: str = "", source_file: str = "") -> dict:
         try:
             vistos: set[str] = set()
             with out_path.open("a", encoding="utf-8") as fh:
-                for chunk in chunks:
+                for chunk, contexto in chunks:
                     if _job["state"] == "parando":
                         break
-                    saida = _ask_safe(chunk, insistir=False)
+                    saida = _ask_safe(chunk, insistir=False, contexto=contexto)
                     # trecho grande sem nenhum fato quase sempre e o modelo sendo conservador
                     if "- " not in saida and len(chunk) > 400:
-                        saida = _ask_safe(chunk, insistir=True)
+                        saida = _ask_safe(chunk, insistir=True, contexto=contexto)
                     for line in saida.splitlines():
                         line = line.strip()
                         if not line.startswith("- ") or line.lower() in vistos:
@@ -305,7 +455,7 @@ def start(raw: str = "", subject: str = "", source_file: str = "") -> dict:
                         if is_secret(line):
                             _job["dropped"] += 1  # segredo nunca vai para o arquivo de treino
                             continue
-                        if not grounded(line, chunk):
+                        if not grounded(line, chunk + "\n" + contexto):
                             _job["invented"] += 1  # nao esta no texto: seria treinar invencao
                             continue
                         vistos.add(line.lower())
@@ -319,7 +469,12 @@ def start(raw: str = "", subject: str = "", source_file: str = "") -> dict:
             _job["big"] = tamanho > PREVIEW_MAX
             texto = out_path.read_text(encoding="utf-8")
             _job["text"] = texto if not _job["big"] else texto[:PREVIEW_MAX]
+            # o texto bruto ja cumpriu o papel; fica so o arquivo de fatos
+            if _job["lote"] and _job["facts"]:
+                lotes.apagar(_job["lote"], so_bruto=True)
+                _job["apagou_bruto"] = True
             _job["state"] = "done"
+            _job["terminou"] = True
         except Exception as exc:
             _job["state"] = "error"
             _job["error"] = str(exc)

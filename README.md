@@ -98,11 +98,16 @@ carrega em float32 (bitsandbytes só quantiza em CUDA) e o lote da prova cai par
 
 ## Extrair documentação
 
-Em dois tempos, para você não precisar adivinhar um número de páginas:
+Em três tempos, para você não precisar adivinhar um número de páginas:
 
 1. **Procurar páginas** — anda a árvore a partir da raiz e lista cada página **pelo nome**.
-2. **Marcar e extrair** — você escolhe quais entram; só elas viram arquivo de treino, e a
-   formatação começa sozinha.
+   Termina com um aviso claro (“BUSCA CONCLUÍDA — N páginas”), dizendo quantos links ficaram
+   de fora pelo teto.
+2. **Marcar e extrair** — você escolhe quais entram e elas viram um **lote** com nome (o
+   assunto que você deu; sem ele, um nome tirado da URL).
+3. **Formatar o lote** — um de cada vez. Enquanto um lote formata, nova busca é recusada, e
+   dar F5 continua mostrando “formatando” com o botão de parar. Terminou, o texto bruto é
+   apagado e fica só o arquivo de fatos. Lotes velhos podem ser apagados na lista.
 
 Usa o Chrome sem janela, então pega página montada por JavaScript; descreve as imagens com
 `learn.vision_model`; e, com "seguir links para outras docs", entra também nas páginas de
@@ -125,6 +130,13 @@ Dois filtros cuidam da qualidade:
   costuma estar em inglês e o fato sai em português.
 - **Comando é conferido**: o que aparece em `código` ou bloco de código tem que virar fato;
   o que escapou ganha uma segunda passada.
+- **O fato nasce com o contexto.** O trecho viaja junto com a trilha de títulos, e o pedaço
+  quebra em cada seção. Assim o item “Remove os parâmetros type, choices e metavar” vira
+  “No Python 3.14 foram removidos os parâmetros `type`, `choices` e `metavar` de
+  `argparse.BooleanOptionalAction`, descontinuados desde o Python 3.12”.
+- **Fato longo fica longo.** Comando e explicação técnica são compridos; cortar em pedaços
+  curtos estraga o sentido. O Conferir só aponta linha curta demais, primeira pessoa,
+  repetição e segredo — e o botão **Consertar** arruma isso.
 
 ## Preparar outra máquina
 

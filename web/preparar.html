@@ -24,11 +24,17 @@
     </header>
 
     <section class="card">
+      <h2>Lotes extraídos <span class="sub">(escolha um para formatar)</span></h2>
+      <p id="lotesNota" class="note"></p>
+      <ul id="lotes" class="runs"></ul>
+    </section>
+
+    <section class="card">
       <h2>1a. Puxar de um site (opcional)</h2>
       <p class="note">Informe a raiz: o programa anda a árvore, lista cada página pelo nome e você marca o que quer extrair. Blocos de código, imagens e links para a doc de outras ferramentas entram junto. Pode parar quando quiser.</p>
       <div class="grid2">
         <input id="url" type="text" placeholder="https://docs.python.org/pt-br/3/" />
-        <input id="subject2" type="text" placeholder="Assunto (ex.: Python)" />
+        <input id="subject2" type="text" placeholder="Assunto — vira o nome do lote (ex.: Python 3.14)" />
       </div>
       <div class="grid2">
         <input id="incluir" type="text" placeholder="só endereços contendo… (ex.: /spaces/TIME/)" />
@@ -79,6 +85,7 @@
       <textarea id="out" class="big" placeholder="O resultado aparece aqui."></textarea>
       <div class="controls">
         <button id="lintBtn" type="button">Conferir</button>
+        <button id="fixBtn" type="button">Consertar o que achei</button>
         <button id="fmtStop" class="danger" type="button">Parar formatação</button>
         <input id="fname" type="text" placeholder="nome-do-arquivo.md" />
         <button id="saveBtn" class="primary" type="button">Salvar no caderno</button>
@@ -123,6 +130,7 @@
           ? j.facts + " fatos" + (j.cmds && j.cmds[0] ? ", comandos cobertos " + j.cmds[1] + "/" + j.cmds[0] : "") + (j.invented ? ", " + j.invented + " invenções barradas" : "") + (j.skipped ? ", " + j.skipped + " lote(s) pulados" : "") + (j.dropped ? ", " + j.dropped + " sensíveis descartados" : "") + (j.copied ? ", " + j.copied + " cópias do exemplo bloqueadas" : "") + (j.big ? ". Arquivo grande: o campo mostra o começo e o salvar usa o arquivo inteiro." : ". Confira e salve.")
           : "";
       if (j.state !== "running" && j.state !== "parando" && j.state !== "comandos") {
+        pintaLotes().catch(() => {});
         clearInterval(poll); poll = null; setSpin(false);
         document.getElementById("fmtBtn").disabled = false;
         if (j.state === "done") lint();
@@ -248,6 +256,7 @@
         incluir: document.getElementById("incluir").value,
         excluir: document.getElementById("excluir").value,
         so_abaixo: document.getElementById("so_abaixo").checked,
+        assunto: document.getElementById("subject2").value,
       });
       if (!r.accepted) { document.getElementById("crawlNote").textContent = r.reason; return; }
       if (!crawlPoll) crawlPoll = setInterval(() => watchCrawl().catch(() => {}), 2000);
@@ -276,6 +285,103 @@
       watchCrawl();
     };
     watchCrawl().catch(() => {});
+
+    // formatacao vive no servidor: dar F5 tem que voltar mostrando "formatando" e o Parar
+    api("/api/format-job").then((j) => {
+      if (["running", "comandos", "parando"].includes(j.state)) {
+        setSpin(true);
+        if (!poll) poll = setInterval(() => watch().catch(() => {}), 2000);
+        watch();
+      }
+    }).catch(() => {});
+
+    async function pintaLotes() {
+      const j = await api("/api/lotes");
+      const f = await api("/api/format-job");
+      const ul = document.getElementById("lotes");
+      const ocupado = ["running", "comandos", "parando"].includes(f.state);
+      ul.innerHTML = "";
+      if (!j.itens.length) {
+        document.getElementById("lotesNota").textContent = "Nenhum lote ainda. Extraia um site abaixo.";
+      } else {
+        document.getElementById("lotesNota").textContent =
+          j.itens.length + " lote(s). O texto bruto é apagado depois que vira fatos.";
+      }
+      j.itens.forEach((it) => {
+        const li = document.createElement("li");
+        const info = document.createElement("div");
+        const formatando = ocupado && f.lote === it.id;
+        info.textContent = (formatando ? "⏳ " : it.estado === "formatado" ? "✅ " : "• ") +
+          it.id + " · " + (it.paginas || 0) + " página(s) · " + Math.round((it.bytes || 0) / 1000) + "k" +
+          (it.estado === "formatado" ? " · já formatado" : "");
+        const nota = document.createElement("div");
+        nota.className = "note";
+        nota.textContent = (it.url || "") + (formatando ? " — formatando agora" : "");
+        const bloco = document.createElement("div");
+        bloco.append(info, nota);
+        li.appendChild(bloco);
+        const acoes = document.createElement("span");
+        if (it.bruto && !ocupado) {
+          const b = document.createElement("button");
+          b.className = "primary small"; b.type = "button"; b.textContent = "Formatar este";
+          b.onclick = () => formatarLote(it.id, it.assunto || it.id);
+          acoes.appendChild(b);
+        }
+        if (it.fatos) {
+          const v = document.createElement("button");
+          v.className = "small"; v.type = "button"; v.textContent = "Ver fatos";
+          v.onclick = async () => {
+            const r = await api("/api/format-job");
+            sourceFile = ""; bigFile = it.fatos;
+            out.value = "(arquivo em " + it.fatos + ")";
+            fmtNote.textContent = "Fatos deste lote em " + it.fatos + ". Dê um nome e salve no caderno.";
+          };
+          acoes.appendChild(v);
+        }
+        const d = document.createElement("button");
+        d.className = "danger small"; d.type = "button"; d.textContent = "Apagar";
+        d.disabled = formatando;
+        d.onclick = async () => {
+          if (!confirm("Apagar o lote " + it.id + " (texto extraído e fatos)?")) return;
+          await api("/api/lote-delete", { id: it.id });
+          pintaLotes();
+        };
+        acoes.appendChild(d);
+        li.appendChild(acoes);
+        ul.appendChild(li);
+      });
+    }
+
+    async function formatarLote(id, assunto) {
+      document.getElementById("subject").value = assunto || "";
+      const r = await api("/api/format", { lote: id, subject: assunto || "" });
+      if (!r.accepted) { fmtNote.textContent = r.reason; return; }
+      sourceFile = "";
+      setSpin(true);
+      if (!poll) poll = setInterval(() => watch().catch((e) => { fmtNote.textContent = e.message; }), 2000);
+      watch();
+    }
+
+    document.getElementById("fixBtn").onclick = async () => {
+      const r = await api("/api/fix", { text: out.value, subject: document.getElementById("subject").value });
+      if (!r.accepted) { fmtNote.textContent = r.reason; return; }
+      fmtNote.textContent = "Consertando…";
+      const t = setInterval(async () => {
+        const j = await api("/api/fix-job");
+        fmtNote.textContent = "Consertando " + j.done + "/" + j.total + "…";
+        if (j.state !== "running") {
+          clearInterval(t);
+          if (j.state === "done") {
+            out.value = j.text;
+            fmtNote.textContent = j.mudou + " linha(s) reescrita(s), " + j.tirou + " removida(s).";
+            lint();
+          } else { fmtNote.textContent = "Erro ao consertar: " + j.text; }
+        }
+      }, 1500);
+    };
+
+    setInterval(() => pintaLotes().catch(() => {}), 5000);
+    pintaLotes().catch(() => {});
 
     api("/api/format-job").then((j) => {
       document.getElementById("skill").textContent = j.skill;
