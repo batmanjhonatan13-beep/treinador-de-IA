@@ -26,3 +26,4 @@ data/aprovacoes.json
 *.tar.gz
 *.tar.bz2
 *.docset
+*:Zone.Identifier
