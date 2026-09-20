@@ -173,7 +173,11 @@ def status() -> dict:
     }
 
 
-def system_prompt(use_file: bool) -> str:
+# O chat servia a dois donos com um prompt so, e o resultado era ruim para os dois: pedir
+# "me ensine" e receber uma linha. Agora o modo e explicito.
+#   curto    — uma linha, so o fato. E o formato do treino e das provas.
+#   conversa — explica, ensina, leva em conta o que ja foi dito.
+def system_prompt(use_file: bool, modo: str = "conversa") -> str:
     base = (
         "Voce e um modelo local (Qwen) rodando no PC do usuario via Ollama.\n"
         "Voce NAO esta na Alibaba Cloud, nem na internet, nem em API paga.\n"
@@ -191,6 +195,16 @@ def system_prompt(use_file: bool) -> str:
             "se o fato realmente nao estiver no caderno.\n\n"
             f"{knowledge}"
         )
+    if modo == "conversa":
+        return (
+            "Voce e Qwen, um modelo local rodando no PC do usuario. Responda em portugues.\n"
+            "Leve em conta a conversa inteira, nao so a ultima mensagem: se o usuario disser "
+            "'me ensine' ou 'explique melhor', ele esta falando do assunto anterior.\n"
+            "Quando pedirem para ensinar ou explicar, explique de verdade: passo a passo, com "
+            "exemplo, quantas linhas forem precisas.\n"
+            "Se nao souber, diga que nao sabe — mas nao use isso para fugir de uma explicacao.\n"
+            "Nao mencione arquivo, caderno, LoRA, consulta nem sistema."
+        )
     return (
         "Voce e Qwen. Responda em portugues, curto, so com o que voce ja sabe. "
         "Se nao souber, diga que nao sabe, com as suas palavras. "
@@ -198,27 +212,71 @@ def system_prompt(use_file: bool) -> str:
     )
 
 
-def with_profile(messages: list[dict], use_file: bool = True) -> list[dict]:
+# A janela de contexto do Ollama vem em 4096 fichas por padrao. Um caderno maior que isso
+# e CORTADO EM SILENCIO: o modelo responde "nao sei" com o fato ali, no pedaco que foi
+# descartado. Medido aqui: 50 mil caracteres com 4096 -> resposta errada em 1,7 s; os
+# mesmos 50 mil com 16384 -> resposta certa em 7 s. Entao a janela passa a acompanhar o
+# tamanho do caderno, e o que nao couber e dito em voz alta.
+JANELAS = (4096, 8192, 16384, 32768)
+FICHAS_POR_CARACTERE = 1 / 3.5
+
+
+def janela_para(texto: str) -> int:
+    fichas = len(texto) * FICHAS_POR_CARACTERE + 700     # folga para a pergunta e a resposta
+    for tamanho in JANELAS:
+        if fichas < tamanho * 0.9:
+            return tamanho
+    return JANELAS[-1]
+
+
+def cabe_no_contexto(texto: str) -> tuple[bool, str]:
+    """Diz se o caderno inteiro cabe, e o que fazer quando nao cabe."""
+    fichas = len(texto) * FICHAS_POR_CARACTERE
+    teto = JANELAS[-1] * 0.9
+    if fichas <= teto:
+        return True, ""
+    sobra = int((fichas - teto) * 3.5)
+    return False, (
+        f"o caderno tem {len(texto)//1000} mil caracteres e so cabem cerca de "
+        f"{int(teto * 3.5)//1000} mil na janela do modelo: {sobra//1000} mil ficam de fora "
+        "e o modelo nem sabe que existiram. Divida o arquivo, ou treine esse conteudo em "
+        "vez de consultar."
+    )
+
+
+def with_profile(messages: list[dict], use_file: bool = True, modo: str = "conversa") -> list[dict]:
     rest = [m for m in messages if m.get("role") != "system"]
-    return [{"role": "system", "content": system_prompt(use_file)}, *rest]
+    return [{"role": "system", "content": system_prompt(use_file, modo)}, *rest]
 
 
-def chat(messages: list[dict], stream: bool = False, use_file: bool = True, use_lora: bool = True):
+def chat(messages: list[dict], stream: bool = False, use_file: bool = True,
+         use_lora: bool = True, modo: str = "conversa"):
     if not use_file and use_lora:
         adapter = serving_adapter()
         if adapter:
             try:
                 from agentepc.engine import chat_adapter
+                from agentepc.prompting import SYSTEM
 
-                return chat_adapter(with_profile(messages, use_file=False), adapter=adapter)
+                # Um conhecimento treinado so foi visto num formato: uma pergunta, uma
+                # resposta, com esta linha de sistema. Jogar a conversa inteira nesse molde
+                # e pedir o que ele nunca viu — e a resposta sai quebrada. Entao, com o
+                # conhecimento ligado, vale a ultima pergunta. Esta escrito na tela.
+                ultima = next((m.get("content", "") for m in reversed(messages)
+                               if m.get("role") == "user"), "")
+                return chat_adapter([{"role": "system", "content": SYSTEM},
+                                     {"role": "user", "content": ultima}], adapter=adapter)
             except Exception as exc:
                 print(f"[lora] fallback ollama: {exc}")
     ensure_server()
+    montadas = with_profile(messages, use_file=use_file, modo=modo)
+    inteiro = "".join(m.get("content", "") for m in montadas)
     payload = {
         "model": model_name(),
-        "messages": with_profile(messages, use_file=use_file),
+        "messages": montadas,
         "stream": stream,
         "keep_alive": "30m",
+        "options": {"num_ctx": janela_para(inteiro)},
     }
     if not stream:
         data = request("/api/chat", payload, timeout=300)

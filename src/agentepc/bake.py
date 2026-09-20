@@ -115,6 +115,12 @@ def training_pairs(file: str | None = None) -> list[dict]:
         }
     )
     out.extend({"user": r["user"], "assistant": r["assistant"]} for r in jsonl_pairs(file))
+    # Conhecimento geral junto: sem isso, dezenas de passadas sobre um punhado de fatos
+    # ensinam o modelo a responder o seu arquivo para QUALQUER pergunta. Com isso, o treino
+    # tem que preservar o que ele ja sabia enquanto aprende o que e novo.
+    from agentepc import geral
+
+    out.extend(geral.pares())
     seen, unique = set(), []
     for row in out:
         if row["user"] in seen:

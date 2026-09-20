@@ -258,6 +258,8 @@ def _record(state: str, snapshot: bool, parent: str | None) -> None:
             "first_pass": bool(_job["attempts"] and _job["attempts"][0].get("first")),
             "streak": _job["streak"],
             "attempts": _job["attempts"],
+            # quanto do conhecimento geral sobreviveu a este treino
+            "geral": _job.get("geral") or {},
             "consolidated": _job["streak"] >= _job["need_streak"],
         }
     )
@@ -371,7 +373,7 @@ def adapters() -> dict:
         active = raw
     else:
         active = snaps[-1]["id"]  # padrao: o treino mais recente
-    keys = ("id", "ts", "file", "state", "passed", "total", "facts", "size", "consolidated",
+    keys = ("id", "ts", "file", "state", "passed", "total", "facts", "size", "consolidated", "geral",
             "first_pass", "tested", "base_hf", "modelo")
     base_atual = (load().get("model") or {}).get("base_hf")
     itens = []
@@ -508,6 +510,7 @@ def job_status() -> dict:
         "streak": _job["streak"],
         "need_streak": _job["need_streak"],
         "attempts": _job["attempts"],
+        "geral": _job.get("geral") or {},
         "efficiency": efficiency(),
         "consolidated_files": consolidated_files(),
         "test": test_status(),
@@ -539,6 +542,28 @@ def _marca_travada(rows: list[dict]) -> dict | None:
         if _travadas[chave][1] >= _TRAVA_LIMITE:
             return {**row, "vezes": _travadas[chave][1]}
     return None
+
+
+def _prova_geral(session) -> dict:
+    """Refaz as perguntas gerais com o adaptador ligado e mede o que sobrou.
+
+    A prova do arquivo pode dar 8/8 e o modelo ter virado um papagaio de um assunto so.
+    Isso aqui e o contrapeso: mostra o preco que o treino cobrou do resto.
+    """
+    from agentepc import geral
+
+    perguntas = geral.perguntas()
+    if not perguntas:
+        return {}
+    respostas = session.answer(perguntas)
+    if len(respostas) < len(perguntas):
+        return {}
+    medida = geral.prova(respostas)
+    _say(geral.resumo(medida))
+    if medida.get("total") and medida["mantidas"] < medida["total"] * 0.8:
+        _say("o treino comeu conhecimento demais: treine mais fatos de uma vez, ou "
+             "aumente 'replay' no config.yaml, ou desligue o LoRA para conversa geral")
+    return medida
 
 
 def _probe(session, quiz: list[dict]) -> list[dict] | None:
@@ -625,6 +650,7 @@ def start_job(force: bool = False, file: str | None = None, fresh: bool = False)
             "streak": 0,
             "need_streak": int((load().get("learn") or {}).get("streak") or 3),
             "attempts": [],
+            "geral": {},
         }
     )
     _say(f"treino de {file} (independente, parte do Qwen original): elaborando perguntas a partir do arquivo")
@@ -718,6 +744,7 @@ def start_job(force: bool = False, file: str | None = None, fresh: bool = False)
                     _job["saved"] = True
                     _say(f"tentativa {tentativa}: {len(quiz)}/{len(quiz)} de primeira — sequencia {_job['streak']}/{alvo}")
                     if _job["streak"] >= alvo:
+                        _job["geral"] = _prova_geral(session)
                         _finish(
                             "done",
                             f"consolidado: {alvo} tentativas seguidas acertaram tudo de primeira, "

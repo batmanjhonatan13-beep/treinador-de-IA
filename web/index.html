@@ -33,9 +33,11 @@
         <button id="onBtn" class="primary" type="button">Ativar modelo</button>
         <button id="offBtn" class="danger" type="button">Desligar modelo</button>
         <button id="fileToggle" type="button">Desativar consulta</button>
+        <button id="modoBtn" type="button">Respostas: conversa</button>
         <button id="newChat" type="button">Nova conversa</button>
       </div>
     </header>
+    <p class="note" id="loraNota"></p>
     <div id="trainBanner" class="banner">Treino rodando. Acompanhe em <a href="/treino.html">Treino</a>.</div>
     <div class="controls" id="abas">
       <button id="abaTexto" class="primary" type="button">Texto</button>
@@ -112,6 +114,29 @@
   </div>
   <script src="/app.js"></script>
   <script>
+    // conversa = explica e ensina · curto = uma linha, o formato do treino
+    window.modoResposta = localStorage.getItem("modoResposta") || "conversa";
+    function pintaModo() {
+      const b = document.getElementById("modoBtn");
+      if (b) b.textContent = "Respostas: " + (window.modoResposta === "curto" ? "curtas" : "conversa");
+    }
+    document.getElementById("modoBtn").onclick = () => {
+      window.modoResposta = window.modoResposta === "curto" ? "conversa" : "curto";
+      localStorage.setItem("modoResposta", window.modoResposta);
+      pintaModo();
+    };
+    pintaModo();
+
+    function pintaLoraNota() {
+      const el = document.getElementById("loraNota");
+      if (!el) return;
+      el.textContent = (window.useLora && !window.useFile)
+        ? "Conhecimento treinado ligado: ele responde pergunta a pergunta, sem memória da conversa — é o formato em que foi treinado. Para conversar de verdade, desligue o LoRA."
+        : "";
+    }
+    setInterval(pintaLoraNota, 1500);
+    pintaLoraNota();
+
     const log = document.getElementById("log");
     const form = document.getElementById("form");
     const q = document.getElementById("q");
@@ -179,11 +204,13 @@
       messages.push({ role: "user", content: text });
       document.getElementById("send").disabled = true;
       try {
-        const payload = window.useFile ? messages : [{ role: "user", content: text }];
+        // A conversa inteira vai sempre. Antes, com a consulta desligada, só a última
+        // mensagem era enviada — e o modelo não tinha como entender "me ensine".
         const data = await api("/api/chat", {
-          messages: payload,
+          messages,
           use_file: window.useFile,
           use_lora: window.useLora,
+          modo: window.modoResposta || "conversa",
         });
         messages.push({ role: "assistant", content: data.text });
         add("bot", data.text);

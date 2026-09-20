@@ -161,8 +161,15 @@
       const eff = h.train_rounds
         ? h.train_rounds + " rodadas · " + h.rounds + " prova(s)" + (h.facts ? " · " + (h.train_rounds / h.facts).toFixed(2) + " por linha" : "")
         : h.rounds + " rodada(s)";
+      // o que o treino cobrou do conhecimento que o modelo ja tinha
+      const g = h.geral && h.geral.total
+        ? " · geral " + h.geral.mantidas + "/" + h.geral.total : "";
       main.textContent = (h.consolidated ? "🟢 " : "") + fmtTime(h.ts, true) + " · " + (labels[h.state] || h.state) +
-        " · " + eff + " · " + h.passed + "/" + h.total + nota + w;
+        " · " + eff + " · " + h.passed + "/" + h.total + nota + g + w;
+      if (h.geral && h.geral.total && h.geral.mantidas < h.geral.total * 0.8) {
+        main.title = "este treino apagou parte do conhecimento geral do modelo — veja o log";
+        main.classList.add("bad");
+      }
       main.onclick = () => { selected = selected === h.id ? "" : h.id; lastHistKey = ""; renderHistory(rows); showLog(); };
       li.appendChild(main);
       return li;

@@ -110,6 +110,9 @@ learn:
   chunk_rounds: 6
   # consolidado = N tentativas seguidas que acertam tudo ja na primeira prova
   streak: 3
+  # exemplos de conhecimento geral misturados ao treino, para o LoRA somar em vez de
+  # substituir. 0 desliga (e o modelo tende a responder o seu arquivo para tudo).
+  replay: 30
   probe_batch: 8
   # extrator de documentacao
   crawl_delay: 0.5

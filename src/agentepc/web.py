@@ -246,8 +246,15 @@ class Handler(BaseHTTPRequestHandler):
                     stream=False,
                     use_file=bool(body.get("use_file", True)),
                     use_lora=bool(body.get("use_lora", True)),
+                    modo=body.get("modo") or "conversa",
                 )
-                self._json(200, {"text": text, "use_file": bool(body.get("use_file", True)), **ollama.status()})
+                aviso = ""
+                if body.get("use_file", True):
+                    from agentepc.memory import read_knowledge
+
+                    cabe, aviso = ollama.cabe_no_contexto(read_knowledge() or "")
+                self._json(200, {"text": text, "aviso": aviso,
+                                 "use_file": bool(body.get("use_file", True)), **ollama.status()})
                 return
             if path == "/api/knowledge":
                 body = self._read_json()
